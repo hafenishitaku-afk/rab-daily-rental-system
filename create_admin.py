@@ -1,8 +1,14 @@
 import psycopg2
 from werkzeug.security import generate_password_hash
 
-# 👇 PASTE YOUR EXTERNAL DATABASE URL HERE, ENDING WITH /rental_db
-DATABASE_URL = "postgresql://rab_main_db_user:hNYrV6OfYmxNDw5ZvQdNZe4d3d1sGbqy@dpg-dbne3m0u01pc73cgn5rg-a.virginia-postgres.render.com/rental_db"
+import os
+import psycopg2
+from dotenv import load_dotenv
+
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+
 
 def create_admin():
     conn = psycopg2.connect(DATABASE_URL)
