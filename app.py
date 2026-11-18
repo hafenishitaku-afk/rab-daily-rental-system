@@ -2591,7 +2591,7 @@ def staff_verify():
 @limiter.limit("50 per minute;200 per hour")
 def login():
     if user['twofa_required'] == 1 and user['twofa_enabled'] == 0:
-    return redirect(url_for('twofa_setup'))
+        return redirect(url_for('twofa_setup'))
 
     if not session.get("staff_verified"):
         return redirect(url_for("home"))
