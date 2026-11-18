@@ -4736,14 +4736,10 @@ def serve_worker_photo(user_id):
     return send_file(full_path, as_attachment=False)
 
 
-
-
-
 @app.route("/users/add", methods=["GET", "POST"])
 @login_required
 @admin_required
 def add_user():
-   
     """Add a new user (Admin only)."""
     conn = db()
     c = conn.cursor()
@@ -4755,14 +4751,8 @@ def add_user():
         full_name = request.form.get("full_name", "").strip()
         email = request.form.get("email", "").strip()
 
-        branch_id = request.form.get("branch_id") or None
-        if branch_id:
-            branch_id = int(branch_id)
-
-        # if not username or not password:
-        #     flash("Username and password are required.", "danger")
-        #     conn.close()
-        #     return redirect(url_for("add_user"))
+        branch_id = request.form.get("branch_id")
+        branch_id = int(branch_id) if branch_id else None
 
         if not username or not password:
             flash("Username and password are required.", "danger")
@@ -4776,12 +4766,12 @@ def add_user():
             conn.close()
             return redirect(url_for("add_user"))
 
-
         try:
             execute_query(c, """
                 INSERT INTO users (username, password_hash, role, full_name, email, branch_id)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (username, generate_password_hash(password), role, full_name, email, branch_id))
+            
             conn.commit()
 
             log_audit(
@@ -4791,22 +4781,30 @@ def add_user():
             )
 
             flash(f"User '{username}' created successfully!", "success")
-        except sqlite3.IntegrityError:
-            flash(f"Username '{username}' already exists.", "danger")
+            conn.close()
+            return redirect(url_for("users"))
 
-        conn.close()
-        return redirect(url_for("users"))
+        except Exception as e:
+            # Rollback the transaction so the connection remains usable
+            conn.rollback()
+            error_msg = str(e).lower()
+            
+            # Catch duplicate errors for BOTH PostgreSQL and SQLite
+            if "duplicate key" in error_msg or "unique constraint" in error_msg or "unique" in error_msg:
+                flash(f"Username '{username}' already exists. Please choose a different one.", "danger")
+            else:
+                # Catch any other unexpected database errors
+                flash(f"An unexpected error occurred: {e}", "danger")
+            
+            conn.close()
+            return redirect(url_for("add_user"))
 
-    # GET branch
+    # GET: Fetch branches for the dropdown
     stations = execute_query(c, """
         SELECT id, name FROM branches WHERE is_active = 1 ORDER BY name
     """).fetchall()
 
-
     conn.close()
-
-
-
     return render_template("add_user.html", title="Add User", stations=stations)
 
 
