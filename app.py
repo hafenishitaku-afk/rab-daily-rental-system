@@ -270,6 +270,7 @@ def backfill_2fa_required():
         print(f"⚠️ backfill_2fa_required failed: {e}")
 
 
+
 @app.before_request
 def _enforce_2fa_setup():
     """..."""
@@ -309,6 +310,8 @@ def _enforce_2fa_setup():
 
     if user.get("twofa_enabled") and not session.get("twofa_verified"):
         return redirect(url_for("twofa_verify"))
+
+
 
 
 
@@ -2587,6 +2590,9 @@ def staff_verify():
 @app.route("/login", methods=["GET", "POST"])
 @limiter.limit("50 per minute;200 per hour")
 def login():
+    if user['twofa_required'] == 1 and user['twofa_enabled'] == 0:
+    return redirect(url_for('twofa_setup'))
+
     if not session.get("staff_verified"):
         return redirect(url_for("home"))
 

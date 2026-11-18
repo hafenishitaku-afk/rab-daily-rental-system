@@ -22,7 +22,7 @@ def create_rental_tables():
         """CREATE TABLE IF NOT EXISTS users(
             id SERIAL PRIMARY KEY, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, 
             role TEXT DEFAULT 'staff', full_name TEXT, email TEXT, branch_id INTEGER, 
-            phone TEXT, job_title TEXT, specialty TEXT, hire_date TIMESTAMP, photo_path TEXT,
+            phone TEXT, job_title TEXT, specialty TEXT, hire_date TIMESTAMP, photo_path TEXT, salary REAL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, 
             twofa_required INTEGER DEFAULT 0, twofa_enabled INTEGER DEFAULT 0
         );""",
