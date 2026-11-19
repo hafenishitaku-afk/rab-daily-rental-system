@@ -1,0 +1,31 @@
+import os
+import psycopg2
+from dotenv import load_dotenv
+
+# 1. Load variables from the .env file (only works locally)
+load_dotenv()
+
+# 2. Read the URL from the environment
+DATABASE_URL = os.environ.get("DATABASE_URL")
+def clear_missing_photo():
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        cursor = conn.cursor()
+        
+        # Update the record to remove the reference to the missing file
+        cursor.execute("""
+            UPDATE pending_registrations 
+            SET customer_photo_path = NULL, id_photo_path = NULL 
+            WHERE customer_photo_path = 'pending_photo_1000899281.jpg' 
+               OR id_photo_path = 'pending_photo_1000899281.jpg';
+        """)
+        
+        conn.commit()
+        print("✅ Cleared missing photo references from the database.")
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        print(f"❌ Error: {e}")
+
+if __name__ == "__main__":
+    clear_missing_photo()
