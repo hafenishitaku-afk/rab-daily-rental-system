@@ -8261,7 +8261,7 @@ def serve_document(doc_id):
         full_path = old_path
 
     if not os.path.exists(full_path):
-        flash(f"Document file not found: {filename}", danger)
+        flash(f"Document file not found: {filename}", "danger")
         return redirect(url_for("view_documents", customer_id=doc["customer_id"]))
     
     return send_file(
