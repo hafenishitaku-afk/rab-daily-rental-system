@@ -5247,17 +5247,20 @@ def pending_registrations():
     c = conn.cursor()
 
     # ✅ Get ALL registrations (Pending, Approved, Rejected)
+    # Using p.id DESC is safer than p.created_at DESC and functionally identical 
+    # for sorting newest first, preventing any UndefinedColumn crashes.
     pending = execute_query(c, """
         SELECT p.*, u.username as reviewer_name
         FROM pending_registrations p
         LEFT JOIN users u ON u.id = p.reviewed_by
         ORDER BY 
-            CASE WHEN p.status = 'Pending' THEN 0 ELSE 1 END, -- Pending first
-            p.created_at DESC
+            CASE WHEN p.status = 'Pending' THEN 0 ELSE 1 END,
+            p.id DESC
     """).fetchall()
     
     conn.close()
     return render_template("pending_registrations.html", title="Registrations History", pending=pending)
+
 
 @app.route("/admin/pending-registrations/<int:reg_id>/approve", methods=["POST"])
 @login_required
