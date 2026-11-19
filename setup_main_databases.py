@@ -1,9 +1,18 @@
 import psycopg2
+import os
 from urllib.parse import urlparse
+from dotenv import load_dotenv
 
-# 👇 PASTE YOUR EXTERNAL DATABASE URL HERE (The one you got from Render)
-# It usually looks like: postgresql://user:pass@host:port/default_db_name
-DATABASE_URL = "postgresql://rab_main_db_zfau_user:PcDKjTvwlBeKzli1F1DPv2Cq07pmLmws@dpg-dbua0nsipgvc73e04kig-a.virginia-postgres.render.com/rab_main_db_zfau"
+# ✅ Load environment variables from .env file
+load_dotenv()
+
+# ✅ Read the URL from the environment (NOT hardcoded)
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    print("❌ Error: DATABASE_URL environment variable is missing.")
+    print("Make sure you have a .env file with DATABASE_URL=postgresql://...")
+    exit(1)
 
 def setup_databases():
     # Parse the URL to find out which database it currently connects to

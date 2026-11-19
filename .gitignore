@@ -21,11 +21,12 @@ venv/
 .venv/
 env/
 
-create_admin.py
-setup_databases.py
-update_prices.py
-restore_db.py
-fix_sequences.py
+# create_admin.py
+# setup_databases.py
+# update_prices.py
+# restore_db.py
+# fix_sequences.py
+# setup_main_databases.py
 
 
 # IDE
