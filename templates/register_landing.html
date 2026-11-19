@@ -9,12 +9,12 @@
         body {
             /* ✅ Background Image Setup - Zoomed In */
             background-image: url("{{ url_for('static', filename='register_bbg.png') }}");
-            background-size: 93%; /* Zooms the image in by 20% */
+            background-size: 93%; /* Zooms the image in */
             background-position: center;
             background-repeat: no-repeat;
             background-attachment: fixed;
             margin: 0;
-            font-family: system-ui, sans-serif;
+            font-family: system-ui, -apple-system, sans-serif;
         }
 
         /* ✅ Layout: Center the card perfectly */
@@ -24,23 +24,22 @@
             align-items: center; /* Center horizontally */
             justify-content: center; /* Center vertically */
             min-height: 100vh;
-            /* Keep a subtle dark gradient so the white card pops */
-            background: transparent;
             padding: 20px;
             box-sizing: border-box;
         }
 
-        /* ✅ The Card: Glassmorphism style */
+        /* ✅ The Card: TRUE Glassmorphism style */
         .landing-card {
-            background: transparent;
+            background: rgba(255, 255, 255, 0.85); /* Semi-transparent white */
+            backdrop-filter: blur(12px); /* The "frosted glass" blur effect */
+            -webkit-backdrop-filter: blur(12px); /* Safari support */
             padding: 30px 40px;
             border-radius: 16px;
-            box-shadow: transparent;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1); /* Soft, realistic shadow (replaces invalid 'transparent') */
             text-align: center;
             max-width: 550px;
             width: 100%;
-        
-            border: 0px solid #f0ec0b;
+            border: 1px solid rgba(255, 255, 255, 0.4); /* Subtle glass edge */
         }
 
         .landing-card h1 {
@@ -59,7 +58,7 @@
 
         .step-box {
             text-align: left;
-            background: #f8f9fa;
+            background: rgba(255, 255, 255, 0.6); /* Slightly transparent to blend with glass card */
             padding: 12px 15px;
             border-radius: 8px;
             margin-bottom: 12px;
@@ -78,21 +77,28 @@
             text-decoration: none;
             box-sizing: border-box;
             border-radius: 8px;
-            transition: transform 0.2s;
+            transition: transform 0.2s, box-shadow 0.2s;
         }
 
         .btn-main:hover {
             transform: scale(1.02);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }
 
         /* Responsive for mobile screens */
         @media (max-width: 768px) {
             .landing-container {
-                padding: 20px;
-                background: rgba(13, 31, 70, 0.85); /* Darker on mobile for readability */
+                padding: 15px;
+                /* Dark overlay on mobile ensures the glass card remains readable */
+                background: rgba(13, 31, 70, 0.7); 
+                min-height: 100vh;
             }
             body {
                 background-size: cover; /* Revert zoom on mobile to save space */
+                background-attachment: scroll; /* Better performance on mobile */
+            }
+            .landing-card {
+                background: rgba(255, 255, 255, 0.95); /* More opaque on mobile for max readability */
             }
         }
     </style>
@@ -103,7 +109,7 @@
             
             <img src="{{ url_for('static', filename='Mylogo.png') }}" 
                  alt="RAB Rent A Bike" 
-                 style="height:100px; width:auto; margin-bottom:5px;"> 
+                 style="height:100px; width:auto; margin-bottom:15px;"> 
             
             <h1>Join RAB Today!</h1>                
             <p class="sub">
