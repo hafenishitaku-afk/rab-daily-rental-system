@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<h1>📅 Appointments</h1>
+<p class="sub">Request a meeting with a Manager or Admin.</p>
+
+<!-- ✅ Card 1: Book a New Appointment -->
+<div class="card">
+    <h2>Request an Appointment</h2>
+    <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        
+        <div class="formgrid">
+            <label>
+                Select Manager / Admin *
+                <select name="manager_id" required>
+                    <option value="" disabled selected>Choose a manager...</option>
+                    {% for m in managers %}
+                        <option value="{{ m.id }}">{{ m.full_name }} ({{ m.role|capitalize }})</option>
+                    {% endfor %}
+                </select>
+            </label>
+            
+            <label>
+                Requested Date & Time *
+                <input type="datetime-local" name="requested_time" required>
+            </label>
+        </div>
+
+        <label style="display:block; margin-top: 15px;">
+            Reason for Appointment *
+            <textarea name="reason" rows="3" placeholder="e.g., Discussing urgent station maintenance..." required></textarea>
+        </label>
+
+        <button class="btn yellow" style="margin-top:16px" type="submit">📩 Send Request</button>
+    </form>
+</div>
+
+<!-- ✅ Card 2: View My Appointments -->
+<div class="card">
+    <h2>My Appointment History</h2>
+    <div class="scroll">
+        <table>
+            <thead>
+                <tr>
+                    <th>Requested Time</th>
+                    <th>Manager</th>
+                    <th>Reason</th>
+                    <th>Status</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% if appointments %}
+                    {% for a in appointments %}
+                    <tr>
+                        <td>
+                            <b>{{ a.requested_time }}</b>
+                        </td>
+                        <td>{{ a.manager_name }}</td>
+                        <td>{{ a.reason }}</td>
+                        <td>
+                            {% if a.status == 'Pending' %}
+                                <span class="badge" style="background:#ffe500; color:#111;">⏳ Pending</span>
+                            {% elif a.status == 'Approved' %}
+                                <span class="badge green">✅ Approved</span>
+                            {% elif a.status == 'Rejected' %}
+                                <span class="badge" style="background:#dc3545; color:#fff;">❌ Rejected</span>
+                            {% else %}
+                                <span class="badge">{{ a.status }}</span>
+                            {% endif %}
+                        </td>
+                        <td style="color:#667085; font-size: 0.9em;">{{ a.created_at }}</td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr>
+                        <td colspan="5" style="text-align:center; color:#667085; padding: 20px;">
+                            You haven't requested any appointments yet.
+                        </td>
+                    </tr>
+                {% endif %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="actions">
+    <a href="{{ url_for('dashboard') }}" class="btn">← Back to Dashboard</a>
+</div>
+
+{% endblock %}

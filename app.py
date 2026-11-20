@@ -1922,7 +1922,18 @@ def init_db():
         """)
 
 
-
+        # ✅ APPOINTMENTS TABLE
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS appointments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                staff_id INTEGER NOT NULL,
+                manager_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                requested_time TEXT NOT NULL,
+                status TEXT DEFAULT 'Pending', 
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
 
     
@@ -2126,6 +2137,10 @@ def ensure_schema_columns():
         ("pending_registrations", "generated_username", "TEXT", "TEXT"),
         ("pending_registrations", "generated_password", "TEXT", "TEXT"),
 
+        # branches — status tracking
+        ("branches", "status", "TEXT DEFAULT 'Open'", "TEXT DEFAULT 'Open'"),
+        ("branches", "status_message", "TEXT", "TEXT"),        
+
     ]
 
     for table, column, sqlite_type, pg_type in columns:
@@ -2181,7 +2196,6 @@ def ensure_schema_columns():
 
     conn.commit()
     conn.close()
-
 
 
 def worker_visible_fields(viewer_role, is_own_profile=False):
@@ -2641,8 +2655,8 @@ def login():
             execute_query(c, "DELETE FROM login_attempts WHERE user_id = ?", (user["id"],))
             conn.commit()
             conn.close()
-            
-            flash("Login successful!", "success")
+            flash(f"Hello 👋 once again! Welcome back 🤝, {user['full_name'] or user['username']}❗", "success")
+
             return redirect(url_for("home"))
             
         else:
@@ -3451,6 +3465,44 @@ def suggestions():
         title="Suggestion Box",
         suggestions=suggestions_list
     )
+
+
+@app.route("/appointments", methods=["GET", "POST"])
+@login_required
+def appointments():
+    conn = db()
+    c = conn.cursor()
+
+    if request.method == "POST":
+        manager_id = request.form.get("manager_id")
+        reason = request.form.get("reason", "").strip()
+        requested_time = request.form.get("requested_time")
+
+        if not manager_id or not reason or not requested_time:
+            flash("All fields are required.", "danger")
+        else:
+            execute_query(c, """
+                INSERT INTO appointments (staff_id, manager_id, reason, requested_time)
+                VALUES (?, ?, ?, ?)
+            """, (session["user_id"], manager_id, reason, requested_time))
+            conn.commit()
+            flash("Appointment request sent successfully.", "success")
+            return redirect(url_for("appointments"))
+
+    # Get list of Managers/Admins to book with
+    managers = execute_query(c, "SELECT id, full_name, role FROM users WHERE role IN ('manager', 'admin')").fetchall()
+
+    # Get my appointments
+    my_appointments = execute_query(c, """
+        SELECT a.*, u.full_name as manager_name 
+        FROM appointments a
+        JOIN users u ON u.id = a.manager_id
+        WHERE a.staff_id = ?
+        ORDER BY a.requested_time DESC
+    """, (session["user_id"],)).fetchall()
+
+    conn.close()
+    return render_template("appointments.html", title="Appointments", managers=managers, appointments=my_appointments)
 
 
 @app.route("/workers")
@@ -5067,6 +5119,36 @@ def stations():
 
 
 
+@app.route("/stations/<int:station_id>/update-status", methods=["POST"])
+@login_required
+@manager_required
+def update_station_status(station_id):
+    new_status = request.form.get("status")
+    message = request.form.get("status_message", "").strip()
+    
+    conn = db()
+    c = conn.cursor()
+    
+    execute_query(c, """
+        UPDATE branches 
+        SET status = ?, status_message = ?
+        WHERE id = ?
+    """, (new_status, message, station_id))
+    
+    conn.commit()
+    conn.close()
+    
+    log_audit(
+        action="station_status_update",
+        entity_type="branch",
+        entity_id=station_id,
+        details=f"Status changed to {new_status}. Message: {message}"
+    )
+    
+    flash("Station status updated successfully.", "success")
+    return redirect(url_for("stations"))
+
+
 # =============================================
 # PUBLIC SELF-REGISTRATION
 # =============================================
@@ -5122,8 +5204,8 @@ def public_register():
         UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-        # Check sizes to prevent hanging
-        MAX_FILE_SIZE = 5 * 1024 * 1024 # 5 MB
+        # ✅ STRICT 2MB LIMIT to prevent iPhone photo storage bloat
+        MAX_FILE_SIZE = 2 * 1024 * 1024 # 2 MB
         
         id_path = None
         if id_photo and id_photo.filename:
@@ -5131,7 +5213,7 @@ def public_register():
             file_size = id_photo.tell()
             id_photo.seek(0)
             if file_size > MAX_FILE_SIZE:
-                flash("Your ID photo is too large. Please upload a file smaller than 5MB.", "danger")
+                flash("Your ID photo is too large (max 2MB). Please open the photo in your phone's gallery, take a screenshot, and upload the screenshot instead.", "danger")
                 return redirect(url_for("public_register"))
             
             filename = f"pending_id_{secure_filename(id_photo.filename)}"
@@ -5144,14 +5226,12 @@ def public_register():
             file_size = customer_photo.tell()
             customer_photo.seek(0)
             if file_size > MAX_FILE_SIZE:
-                flash("Your customer photo is too large. Please upload a file smaller than 5MB.", "danger")
+                flash("Your customer photo is too large (max 2MB). Please open the photo in your phone's gallery, take a screenshot, and upload the screenshot instead.", "danger")
                 return redirect(url_for("public_register"))
 
             filename = f"pending_photo_{secure_filename(customer_photo.filename)}"
             customer_photo.save(os.path.join(UPLOAD_FOLDER, filename))
             photo_path = f"uploads/{filename}"
-
-        # Insert into pending table
 
         # Insert into pending table
         execute_query(c, """
@@ -5169,6 +5249,104 @@ def public_register():
     conn.close()
     return render_template("public_register.html", title="Register with RAB")
 
+# @app.route("/register-now", methods=["GET", "POST"])
+# def public_register():
+#     """Public page for customers to register themselves."""
+#     conn = db()
+#     c = conn.cursor()
+
+#     if request.method == "POST":
+#         full_name = request.form.get("full_name", "").strip()
+#         phone = request.form.get("phone", "").strip()
+#         id_number = request.form.get("id_number", "").strip()
+#         email = request.form.get("email", "").strip()
+#         address = request.form.get("address", "").strip()
+#         gender = request.form.get("gender", "").strip()
+#         terms_accepted = 1 if request.form.get("terms_accepted") == "on" else 0
+#         signature_data = request.form.get("signature_data", "").strip()
+        
+#         id_photo = request.files.get("id_photo")
+#         customer_photo = request.files.get("customer_photo")
+
+#         # ✅ Check if ID / Passport number already exists
+#         if id_number:
+#             existing = execute_query(c, """
+#                 SELECT id FROM customers WHERE id_number = ?
+#                 UNION 
+#                 SELECT id FROM pending_registrations WHERE id_number = ?
+#             """, (id_number, id_number)).fetchone()
+            
+#             if existing:
+#                 flash("A customer with this ID / Passport number already exists in the system.", "danger")
+#                 return redirect(url_for("public_register"))
+
+#         # ✅ Validate the formats
+#         is_valid, error_msg = validate_namibian_identity(phone, id_number)
+#         if not is_valid:
+#             flash(error_msg, "danger")
+#             return redirect(url_for("public_register"))
+
+#         if not full_name or not phone:
+#             flash("Name and phone are required.", "danger")
+#             return redirect(url_for("public_register"))
+        
+#         if not terms_accepted:
+#             flash("You must accept the Terms & Conditions.", "danger")
+#             return redirect(url_for("public_register"))
+
+#         # ✅ Handle File Uploads
+#         import os
+#         from werkzeug.utils import secure_filename
+#         UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
+#         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+#         # Check sizes to prevent hanging
+#         MAX_FILE_SIZE = 5 * 1024 * 1024 # 5 MB
+        
+#         id_path = None
+#         if id_photo and id_photo.filename:
+#             id_photo.seek(0, os.SEEK_END)
+#             file_size = id_photo.tell()
+#             id_photo.seek(0)
+#             if file_size > MAX_FILE_SIZE:
+#                 flash("Your ID photo is too large. Please upload a file smaller than 5MB.", "danger")
+#                 return redirect(url_for("public_register"))
+            
+#             filename = f"pending_id_{secure_filename(id_photo.filename)}"
+#             id_photo.save(os.path.join(UPLOAD_FOLDER, filename))
+#             id_path = f"uploads/{filename}"
+
+#         photo_path = None
+#         if customer_photo and customer_photo.filename:
+#             customer_photo.seek(0, os.SEEK_END)
+#             file_size = customer_photo.tell()
+#             customer_photo.seek(0)
+#             if file_size > MAX_FILE_SIZE:
+#                 flash("Your customer photo is too large. Please upload a file smaller than 5MB.", "danger")
+#                 return redirect(url_for("public_register"))
+
+#             filename = f"pending_photo_{secure_filename(customer_photo.filename)}"
+#             customer_photo.save(os.path.join(UPLOAD_FOLDER, filename))
+#             photo_path = f"uploads/{filename}"
+
+#         # Insert into pending table
+
+#         # Insert into pending table
+#         execute_query(c, """
+#             INSERT INTO pending_registrations 
+#             (full_name, id_number, phone, email, address, gender, id_photo_path, customer_photo_path, signature_data, terms_accepted)
+#             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+#         """, (full_name, id_number, phone, email, address, gender, id_path, photo_path, signature_data, terms_accepted))
+        
+#         conn.commit()
+#         conn.close()
+
+#         flash("Thank you for registering with RAB! Your application has been sent. RAB staff will review it shortly.", "success")
+#         return redirect(url_for("registration_success"))
+
+#     conn.close()
+#     return render_template("public_register.html", title="Register with RAB")
+
 @app.route("/check-status", methods=["GET", "POST"])
 def check_status():
     """Page where applicants enter their phone number to check status."""
@@ -5177,12 +5355,12 @@ def check_status():
         
         conn = db()
         c = conn.cursor()
-        
+        # ORDER BY created_at DESC LIMIT 1
         # Check pending registrations
         reg = execute_query(c, """
             SELECT * FROM pending_registrations 
             WHERE phone = ? OR phone = ?
-            ORDER BY created_at DESC LIMIT 1
+            ORDER BY id DESC LIMIT 1
         """, (phone, f"0{phone[1:]}" if phone.startswith("+264") else phone)).fetchone()
         
         conn.close()
@@ -5219,11 +5397,26 @@ def check_status():
         
     return render_template("check_status.html", title="Check Application Status")
 
-
 @app.route("/how-to-register")
 def how_to_register():
     """Public page explaining what is needed to register."""
-    return render_template("how_to_register.html", title="How to Register")
+    
+    # ✅ 1. Connect to the database and create the cursor
+    conn = db()
+    c = conn.cursor()
+    
+    # ✅ 2. Fetch the stations
+    stations = execute_query(c, """
+        SELECT id, name, location, status, status_message 
+        FROM branches 
+        WHERE is_active = 1 
+        ORDER BY name
+    """).fetchall()
+    
+    conn.close()
+
+    # ✅ 3. Pass 'stations' to the template
+    return render_template("how_to_register.html", title="How to Register", stations=stations)
 
 
 @app.route("/register")
@@ -5304,7 +5497,7 @@ def approve_registration(reg_id):
             full_name, id_number, phone, email, address, user_id, 
             terms_accepted, signature_data, verification_status
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Verified')
-    """, (reg["full_name"], reg["id_number"], reg["phone"], reg["email"], reg["address"], user_id, reg["terms_accepted"], reg["signature_data"]))
+    """, (reg["full_name"], reg["id_number"], reg["phone"], reg["email"], reg["address"], user_id, reg["terms_accepted"], reg["signature_data"]), reg.get("gender") or "Unknown",)
 
     # 3. Move the uploaded documents to the customer's official folder
     if reg["id_photo_path"]:
@@ -6195,7 +6388,23 @@ def dashboard():
         GROUP BY b.id, b.name
         ORDER BY b.name
     """).fetchall()
-    
+
+
+    # ✅ Check for unread announcements
+    unread_announcements = get_single_value(c, """
+        SELECT COUNT(*) FROM announcements a
+        LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.user_id = ?
+        WHERE a.is_active = 1 AND ar.id IS NULL
+    """, (session["user_id"],)) 
+
+
+    stations = execute_query(c, """
+        SELECT id, name, location, status, status_message 
+        FROM branches 
+        WHERE is_active = 1 
+        ORDER BY name
+    """).fetchall()
+
     conn.close()
     
     # Ensure revenue is never negative
@@ -6214,8 +6423,266 @@ def dashboard():
         unpaid_rentals=unpaid_rentals,
         pending_privacy=pending_privacy,
         station_performance=station_performance,
-        retention=RETENTION
+        retention=RETENTION,
+        unread_announcements=unread_announcements,
+        stations=stations # <-- Add this        
     )
+
+# @app.route("/rentals/start", methods=["GET", "POST"])
+# @login_required
+# @staff_required
+# def start_rental():
+#     from datetime import datetime, timedelta, timezone
+#     import pytz
+
+#     conn = db()
+#     c = conn.cursor()
+
+#     if request.method == "POST":
+#         customer_id = request.form.get("customer_id")
+#         bicycle_id = request.form.get("bicycle_id")
+#         start_time = request.form.get("start_time")
+
+#         # ✅ Block if customer has unpaid damage claims
+#         unpaid = get_customer_unpaid_damages(c, customer_id)
+#         if unpaid > 0:
+#             conn.close()
+#             flash(
+#                 f"Cannot start rental: this customer has an unpaid damage balance of N$ {unpaid:.2f}. "
+#                 f"Please settle the balance first.",
+#                 "danger"
+#             )
+#             return redirect(url_for("customer_damages", customer_id=customer_id))
+
+
+#         # ✅ Block if customer has an unpaid balance from a COMPLETED rental
+#         unpaid_rental = execute_query(c, """
+#             SELECT r.id, (r.total_cost - (COALESCE((SELECT SUM(amount) FROM rental_payments WHERE daily_rental_id = r.id), 0) + COALESCE(r.deposit_paid, 0))) AS balance
+#             FROM daily_rentals r
+#             WHERE r.customer_id = ? 
+#               AND r.status = 'Completed' 
+#               AND r.payment_status != 'Paid'
+#         """, (customer_id,)).fetchall()
+
+#         # Filter for actual outstanding amounts
+#         for debt in unpaid_rental:
+#             if debt["balance"] and float(debt["balance"]) > 0:
+#                 conn.close()
+#                 flash(
+#                     f"Cannot start rental: this customer has an unpaid balance of N$ {float(debt['balance']):.2f} "
+#                     f"from a previous rental (#{debt['id']}). Please settle the balance first.",
+#                     "danger"
+#                 )
+#                 return redirect(url_for("record_payment", rental_id=debt["id"]))
+
+
+
+
+#         # ✅ Block if customer already has an active rental
+#         existing_active = execute_query(c, """
+#             SELECT r.id, b.bike_code
+#             FROM daily_rentals r
+#             JOIN bicycles b ON b.id = r.bicycle_id
+#             WHERE r.customer_id = ? AND r.status = 'Active'
+#         """, (customer_id,)).fetchall()
+
+#         if existing_active:
+#             conn.close()
+#             if len(existing_active) == 1:
+#                 active_info = existing_active[0]
+#                 flash(
+#                     f"Cannot start a new rental — this customer already has an active rental "
+#                     f"(#{active_info['id']} on bike {active_info['bike_code']}). "
+#                     f"Please end that rental first.",
+#                     "danger"
+#                 )
+#             else:
+#                 bikes_list = ", ".join(a["bike_code"] for a in existing_active)
+#                 flash(
+#                     f"Cannot start a new rental — this customer already has {len(existing_active)} active rentals "
+#                     f"(bikes: {bikes_list}). Please end them first.",
+#                     "danger"
+#                 )
+#             return redirect(url_for("start_rental"))
+
+#         # ✅ Block if the BICYCLE is already actively rented to ANYONE
+#         bike_active = execute_query(c, """
+#             SELECT r.id, c.full_name
+#             FROM daily_rentals r
+#             JOIN customers c ON c.id = r.customer_id
+#             WHERE r.bicycle_id = ? AND r.status = 'Active'
+#         """, (bicycle_id,)).fetchone()
+
+#         if bike_active:
+#             conn.close()
+#             # Note: Changed 'bike['bike_code']' to just 'bicycle_id' to prevent NameError if bike isn't loaded yet
+#             flash(
+#                 f"Cannot start rental: Bicycle ID {bicycle_id} is already actively rented to {bike_active['full_name']}. "
+#                 f"Please end that rental first.",
+#                 "danger"
+#             )
+#             return redirect(url_for("start_rental"))
+
+#         # ✅ Convert local time to UTC for storage
+#         if start_time:
+#             local_dt = datetime.fromisoformat(start_time)
+#             utc_dt = local_dt - timedelta(hours=2)
+#             start_time_utc = utc_dt.strftime("%Y-%m-%d %H:%M:%S")
+#         else:
+#             utc_dt = datetime.now(timezone.utc).replace(tzinfo=None)
+#             start_time_utc = utc_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+#         # Verify customer is verified
+#         customer = execute_query(c, """
+#             SELECT verification_status FROM customers WHERE id = ?
+#         """, (customer_id,)).fetchone()
+
+#         if not customer or customer["verification_status"] != "Verified":
+#             conn.close()
+#             flash("Customer must be verified before renting.", "danger")
+#             return redirect(url_for("start_rental"))
+
+#         # ✅ Check if the Expected Drop-off Station is Open
+#         if expected_end_station_id:
+#             station_status = execute_query(c, "SELECT status, name FROM branches WHERE id = ?", (expected_end_station_id,)).fetchone()
+#             if station_status and station_status["status"] != "Open":
+#                 conn.close()
+#                 flash(f"Cannot start rental: The expected drop-off station '{station_status['name']}' is currently {station_status['status']}.", "danger")
+#                 return redirect(url_for("start_rental"))
+
+
+
+#         # ✅ Check if Customer is Banned
+#         from datetime import datetime
+#         customer_ban = execute_query(c, "SELECT banned_until FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        
+#         if customer_ban and customer_ban["banned_until"]:
+#             ban_date = datetime.strptime(customer_ban["banned_until"], '%Y-%m-%d').date()
+#             today = datetime.now().date()
+            
+#             if ban_date > today:
+#                 conn.close()
+#                 flash(f"Cannot start rental: This customer is currently BANNED until {customer_ban['banned_until']} due to multiple serious warnings.", "danger")
+#                 return redirect(url_for("start_rental"))
+
+
+
+#         bike = execute_query(c, """
+#             SELECT hourly_rate, daily_cap, deposit_amount FROM bicycles WHERE id = ?
+#         """, (bicycle_id,)).fetchone()
+
+#         if not bike:
+#             conn.close()
+#             flash("Bicycle not found.", "danger")
+#             return redirect(url_for("start_rental"))
+
+#         try:
+#             deposit_paid = float(request.form.get("deposit_paid", bike["deposit_amount"]))
+#             if deposit_paid < 0:
+#                 deposit_paid = 0
+#         except (TypeError, ValueError):
+#             deposit_paid = bike["deposit_amount"]
+
+#         # Station
+#         start_station_id = request.form.get("start_station_id") or None
+#         if start_station_id:
+#             start_station_id = int(start_station_id)
+            
+#         # ✅ Expected drop-off station
+#         expected_end_station_id = request.form.get("expected_end_station_id") or None
+#         if expected_end_station_id:
+#             expected_end_station_id = int(expected_end_station_id)
+
+#         # ✅ SINGLE Rental Insertion (includes expected_end_station_id)
+#         rental_id = insert_and_get_id(c, """
+#             INSERT INTO daily_rentals (
+#                 customer_id, bicycle_id, start_time,
+#                 hourly_rate, daily_cap, deposit_paid, status,
+#                 agreement_signed, started_by_user_id, start_station_id,
+#                 expected_end_station_id
+#             ) VALUES (?, ?, ?, ?, ?, ?, 'Active', 1, ?, ?, ?)
+#         """, (customer_id, bicycle_id, start_time_utc,
+#               bike["hourly_rate"], bike["daily_cap"], deposit_paid,
+#               session["user_id"], start_station_id, expected_end_station_id))
+
+#         # Update bicycle status
+#         execute_query(c, "UPDATE bicycles SET status = 'Rented' WHERE id = ?", (bicycle_id,))
+
+#         # Save start condition note
+#         start_condition_note = (request.form.get("start_condition_note") or "").strip()
+#         execute_query(c, """
+#             UPDATE daily_rentals SET start_condition_note = ? WHERE id = ?
+#         """, (start_condition_note, rental_id))
+
+#         # Save selected items (moved to AFTER rental_id is created)
+#         selected_items = request.form.getlist("items")
+#         for item_id in selected_items:
+#             try:
+#                 execute_query(c, """
+#                     INSERT INTO rental_items (rental_id, item_id, given_by_user_id)
+#                     VALUES (?, ?, ?)
+#                 """, (rental_id, int(item_id), session["user_id"]))
+#             except Exception as e:
+#                 print(f"skip item {item_id}: {e}")
+
+#         # Audit Log
+#         log_audit(
+#             action="rental_start",
+#             entity_type="daily_rental",
+#             entity_id=rental_id,
+#             details=f"Started rental #{rental_id} — customer_id={customer_id}, bike_id={bicycle_id}, "
+#                     f"deposit=N${deposit_paid:.2f}, station_id={start_station_id}"
+#         )
+
+#         conn.commit()
+#         conn.close()
+
+#         flash(f"Rental started successfully! Rental ID: {rental_id}", "success")
+#         return redirect(url_for("dashboard"))
+
+#     # =============================================
+#     # GET branch
+#     # =============================================
+#     customers = execute_query(c, """
+#         SELECT id, full_name, phone FROM customers 
+#         WHERE verification_status = 'Verified' 
+#         ORDER BY full_name
+#     """).fetchall()
+
+#     bicycles = execute_query(c, """
+#         SELECT id, bike_code, brand, model, hourly_rate, daily_cap 
+#         FROM bicycles WHERE status = 'Available'
+#     """).fetchall()
+
+#     stations = execute_query(c, """
+#         SELECT id, name, location FROM branches
+#         WHERE is_active = 1
+#         ORDER BY name
+#     """).fetchall()
+
+#     items_list = execute_query(c, """
+#         SELECT id, name FROM items WHERE is_active = 1 ORDER BY name
+#     """).fetchall()
+
+#     default_station_id = session.get("station_id")
+#     if not default_station_id and stations:
+#         default_station_id = stations[0]["id"]
+
+#     conn.close()
+
+#     namibia_tz = pytz.timezone('Africa/Windhoek')
+#     local_now = datetime.now(namibia_tz)
+
+#     return render_template(
+#         "start_rental.html",
+#         title="Start Rental",
+#         customers=customers,
+#         bicycles=bicycles,
+#         stations=stations,
+#         items_list=items_list,
+#         default_station_id=default_station_id,
+#         now=local_now.strftime("%Y-%m-%dT%H:%M")
+#     )
 
 @app.route("/rentals/start", methods=["GET", "POST"])
 @login_required
@@ -6243,7 +6710,6 @@ def start_rental():
             )
             return redirect(url_for("customer_damages", customer_id=customer_id))
 
-
         # ✅ Block if customer has an unpaid balance from a COMPLETED rental
         unpaid_rental = execute_query(c, """
             SELECT r.id, (r.total_cost - (COALESCE((SELECT SUM(amount) FROM rental_payments WHERE daily_rental_id = r.id), 0) + COALESCE(r.deposit_paid, 0))) AS balance
@@ -6253,7 +6719,6 @@ def start_rental():
               AND r.payment_status != 'Paid'
         """, (customer_id,)).fetchall()
 
-        # Filter for actual outstanding amounts
         for debt in unpaid_rental:
             if debt["balance"] and float(debt["balance"]) > 0:
                 conn.close()
@@ -6263,9 +6728,6 @@ def start_rental():
                     "danger"
                 )
                 return redirect(url_for("record_payment", rental_id=debt["id"]))
-
-
-
 
         # ✅ Block if customer already has an active rental
         existing_active = execute_query(c, """
@@ -6304,7 +6766,6 @@ def start_rental():
 
         if bike_active:
             conn.close()
-            # Note: Changed 'bike['bike_code']' to just 'bicycle_id' to prevent NameError if bike isn't loaded yet
             flash(
                 f"Cannot start rental: Bicycle ID {bicycle_id} is already actively rented to {bike_active['full_name']}. "
                 f"Please end that rental first.",
@@ -6332,9 +6793,7 @@ def start_rental():
             return redirect(url_for("start_rental"))
 
         # ✅ Check if Customer is Banned
-        from datetime import datetime
         customer_ban = execute_query(c, "SELECT banned_until FROM customers WHERE id = ?", (customer_id,)).fetchone()
-        
         if customer_ban and customer_ban["banned_until"]:
             ban_date = datetime.strptime(customer_ban["banned_until"], '%Y-%m-%d').date()
             today = datetime.now().date()
@@ -6343,8 +6802,6 @@ def start_rental():
                 conn.close()
                 flash(f"Cannot start rental: This customer is currently BANNED until {customer_ban['banned_until']} due to multiple serious warnings.", "danger")
                 return redirect(url_for("start_rental"))
-
-
 
         bike = execute_query(c, """
             SELECT hourly_rate, daily_cap, deposit_amount FROM bicycles WHERE id = ?
@@ -6371,6 +6828,13 @@ def start_rental():
         expected_end_station_id = request.form.get("expected_end_station_id") or None
         if expected_end_station_id:
             expected_end_station_id = int(expected_end_station_id)
+            
+            # ✅ MOVED HERE: Check if the Expected Drop-off Station is Open (NOW IT'S SAFE)
+            station_status = execute_query(c, "SELECT status, name FROM branches WHERE id = ?", (expected_end_station_id,)).fetchone()
+            if station_status and station_status["status"] != "Open":
+                conn.close()
+                flash(f"Cannot start rental: The expected drop-off station '{station_status['name']}' is currently {station_status['status']}.", "danger")
+                return redirect(url_for("start_rental"))
 
         # ✅ SINGLE Rental Insertion (includes expected_end_station_id)
         rental_id = insert_and_get_id(c, """
@@ -6393,7 +6857,7 @@ def start_rental():
             UPDATE daily_rentals SET start_condition_note = ? WHERE id = ?
         """, (start_condition_note, rental_id))
 
-        # Save selected items (moved to AFTER rental_id is created)
+        # Save selected items
         selected_items = request.form.getlist("items")
         for item_id in selected_items:
             try:
@@ -6434,7 +6898,7 @@ def start_rental():
     """).fetchall()
 
     stations = execute_query(c, """
-        SELECT id, name, location FROM branches
+        SELECT id, name, location, status FROM branches
         WHERE is_active = 1
         ORDER BY name
     """).fetchall()
@@ -6446,6 +6910,13 @@ def start_rental():
     default_station_id = session.get("station_id")
     if not default_station_id and stations:
         default_station_id = stations[0]["id"]
+
+
+    stations = execute_query(c, """
+        SELECT id, name, location, status, status_message FROM branches
+        WHERE is_active = 1
+        ORDER BY name
+    """).fetchall()        
 
     conn.close()
 
@@ -6462,6 +6933,8 @@ def start_rental():
         default_station_id=default_station_id,
         now=local_now.strftime("%Y-%m-%dT%H:%M")
     )
+
+
 
 
 @app.route("/customers/<int:customer_id>/unban", methods=["POST"])
@@ -6809,6 +7282,290 @@ def admin_run_cleanup():
 
 
 
+# @app.route("/customers", methods=["GET", "POST"])
+# @login_required
+# @staff_required
+# @limiter.limit("10 per minute")
+# def customers():
+#     import os
+#     import cloudinary
+#     import cloudinary.uploader
+#     from werkzeug.utils import secure_filename
+    
+#     conn = db()
+#     c = conn.cursor()
+    
+#     is_postgres = os.environ.get("DATABASE_URL") is not None
+    
+#     # ✅ Check if Cloudinary is configured
+#     use_cloudinary = all([
+#         os.environ.get("CLOUDINARY_CLOUD_NAME"),
+#         os.environ.get("CLOUDINARY_API_KEY"),
+#         os.environ.get("CLOUDINARY_API_SECRET")
+#     ])
+    
+#     if use_cloudinary:
+#         try:
+#             cloudinary.config(
+#                 cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
+#                 api_key=os.environ.get("CLOUDINARY_API_KEY"),
+#                 api_secret=os.environ.get("CLOUDINARY_API_SECRET")
+#             )
+#             print("✅ Cloudinary configured successfully!")
+#         except Exception as e:
+#             print(f"❌ Cloudinary config error: {e}")
+#             use_cloudinary = False
+    
+#     if request.method == "POST":
+#         full_name = request.form.get("full_name", "").strip()
+#         phone = request.form.get("phone", "").strip()
+#         id_number = request.form.get("id_number", "").strip()
+#         email = request.form.get("email", "").strip()
+#         address = request.form.get("address", "").strip()
+#         id_photo = request.files.get("id_photo") if request.files else None
+#         customer_photo = request.files.get("customer_photo") if request.files else None
+        
+#         terms_accepted = 1 if request.form.get("terms_accepted") == "on" else 0
+#         signature_data = request.form.get("signature_data", "").strip()
+
+
+#         # ✅ Validate the formats
+#         is_valid, error_msg = validate_namibian_identity(phone, id_number)
+#         if not is_valid:
+#             flash(error_msg, "danger")
+#             conn.close()
+#             return redirect(url_for("customers"))
+
+#         # ✅ Check if ID / Passport number already exists
+#         if id_number:
+#             existing = execute_query(c, "SELECT id FROM customers WHERE id_number = ?", (id_number,)).fetchone()
+#             if existing:
+#                 flash("A customer with this ID / Passport number already exists in the system.", "danger")
+#                 conn.close()
+#                 return redirect(url_for("customers"))
+
+
+#         if not full_name or not phone:
+#             flash("Name and phone are required.", "danger")
+#             return redirect(url_for("customers"))
+        
+#         if not terms_accepted:
+#             flash("You must accept the Terms & Conditions.", "danger")
+#             return redirect(url_for("customers"))
+        
+#         # Create username
+#         username = phone
+#         existing_user = execute_query(c, "SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+#         if existing_user:
+#             if email:
+#                 username = email
+#             else:
+#                 username = f"cust_{phone}"
+        
+
+        
+#         import secrets
+#         import string
+#         # ✅ Generate a policy-compliant random password (10 chars, letters + digits + special)
+#         alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
+#         temp_password = ''.join(secrets.choice(alphabet) for _ in range(12))
+#         # Guarantee at least one of each class in case of unlucky draw
+#         temp_password = (
+#             secrets.choice(string.ascii_letters)
+#             + secrets.choice(string.digits)
+#             + secrets.choice("!@#$%^&*")
+#             + ''.join(secrets.choice(alphabet) for _ in range(9))
+#         )
+#         # Shuffle so the classes aren't always at the start
+#         temp_list = list(temp_password)
+#         secrets.SystemRandom().shuffle(temp_list)
+#         temp_password = ''.join(temp_list)
+#         password_hash = generate_password_hash(temp_password)
+
+#         # Insert user
+#         try:
+#             execute_query(c, """
+#                 INSERT INTO users (username, password_hash, role, full_name, email)
+#                 VALUES (?, ?, 'customer', ?, ?)
+#             """, (username, password_hash, full_name, email))
+            
+#             user_result = execute_query(c, "SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+#             if user_result:
+#                 user_id = user_result['id'] if isinstance(user_result, dict) else user_result[0]
+#             else:
+#                 flash("Error: User created but ID not found.", "danger")
+#                 return redirect(url_for("customers"))
+#         except sqlite3.IntegrityError:
+#             flash(f"Username '{username}' already exists.", "danger")
+#             return redirect(url_for("customers"))
+        
+#         # Insert customer
+#         # execute_query(c, """
+#         #     INSERT INTO customers (
+#         #         full_name, id_number, phone, email, address, user_id,
+#         #         terms_accepted, terms_accepted_date, signature_data, verification_status
+#         #     ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'Pending')
+#         # """, (full_name, id_number, phone, email, address, user_id, 
+#         #       terms_accepted, signature_data))
+        
+#         # customer_id = c.lastrowid
+
+#         # Get the gender from the form
+#         gender = request.form.get("gender", "").strip()
+
+#         customer_id = insert_and_get_id(c, """
+#             INSERT INTO customers (
+#                 full_name, id_number, phone, email, address, user_id,
+#                 terms_accepted, terms_accepted_date, signature_data, verification_status, gender
+#             ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'Pending', ?)
+#         """, (full_name, id_number, phone, email, address, user_id,
+#               terms_accepted, signature_data, gender))
+
+#         # if is_postgres:
+#         #     customer_result = execute_query(c, "SELECT id FROM customers WHERE user_id = ?", (user_id,)).fetchone()
+#         #     if customer_result:
+#         #         customer_id = customer_result['id'] if isinstance(customer_result, dict) else customer_result[0]
+        
+#         session["customer_id"] = customer_id
+        
+
+#         log_audit(
+#             action="customer_create",
+#             entity_type="customer",
+#             entity_id=customer_id,
+#             details=f"Registered customer '{full_name}' (phone: {phone})"
+#         )
+
+
+#         # ✅ Save documents
+#         UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
+#         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+#         # ✅ Handle ID Photo
+#         if id_photo and id_photo.filename:
+#             ok, err, ext = validate_upload(id_photo)
+#             if not ok:
+#                 flash(f"ID document rejected: {err}", "danger")
+#                 return redirect(url_for("customers"))
+
+#             uploaded = False
+
+#             # Try Cloudinary first
+#             if use_cloudinary:
+#                 try:
+#                     upload_result = cloudinary.uploader.upload(id_photo)
+#                     file_url = upload_result['secure_url']
+#                     execute_query(c, """
+#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
+#                         VALUES (?, 'id_copy', ?)
+#                     """, (customer_id, file_url))
+#                     flash("ID document uploaded successfully!", "success")
+#                     uploaded = True
+#                 except Exception as e:
+#                     print(f"❌ Cloudinary upload failed: {e}")
+
+#             # Fallback to private local storage
+#             if not uploaded:
+#                 try:
+#                     filename = f"id_{customer_id}_{secure_filename(id_photo.filename)}"
+#                     filepath = os.path.join(PRIVATE_UPLOAD_FOLDER, filename)
+#                     id_photo.save(filepath)
+#                     execute_query(c, """
+#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
+#                         VALUES (?, 'id_copy', ?)
+#                     """, (customer_id, f"private_uploads/{filename}"))
+#                     flash("ID document saved securely!", "success")
+#                 except Exception as e:
+#                     print(f"❌ Local save failed: {e}")
+#                     flash("Error uploading ID document.", "danger")
+#                     return redirect(url_for("customers"))
+
+#         # ✅ Handle Customer Photo
+#         if customer_photo and customer_photo.filename:
+#             ok, err, ext = validate_upload(customer_photo)
+#             if not ok:
+#                 flash(f"Customer photo rejected: {err}", "danger")
+#                 return redirect(url_for("customers"))
+
+#             uploaded = False
+
+#             if use_cloudinary:
+#                 try:
+#                     upload_result = cloudinary.uploader.upload(customer_photo)
+#                     file_url = upload_result['secure_url']
+#                     execute_query(c, """
+#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
+#                         VALUES (?, 'customer_photo', ?)
+#                     """, (customer_id, file_url))
+#                     flash("Customer photo uploaded successfully!", "success")
+
+#                     log_audit(
+#                         action="document_upload",
+#                         entity_type="customer",
+#                         entity_id=customer_id,
+#                         details=f"Uploaded {doc_type} for customer #{customer_id}"
+#                     )
+
+#                     uploaded = True
+#                 except Exception as e:
+#                     print(f"❌ Cloudinary upload failed: {e}")
+
+#             if not uploaded:
+#                 try:
+#                     filename = f"photo_{customer_id}_{secure_filename(customer_photo.filename)}"
+#                     filepath = os.path.join(PRIVATE_UPLOAD_FOLDER, filename)
+#                     customer_photo.save(filepath)
+#                     execute_query(c, """
+#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
+#                         VALUES (?, 'customer_photo', ?)
+#                     """, (customer_id, f"private_uploads/{filename}"))
+#                     flash("Customer photo saved securely!", "success")
+#                 except Exception as e:
+#                     print(f"❌ Local save failed: {e}")
+#                     flash("Error uploading customer photo.", "danger")
+#                     return redirect(url_for("customers"))
+
+
+
+        
+#         conn.commit()
+#         conn.close()
+        
+#         flash(f"Customer '{full_name}' registered successfully!", "success")
+#         flash(f"🔑 Login Credentials - Username: {username}, Password: {temp_password}", "success")
+#         flash("📌 Please give these credentials to the customer.", "info")
+        
+#         return redirect(url_for("customers"))
+    
+
+#     # =============================================
+#     # SEARCH FILTER (case-insensitive on both DBs)
+#     # =============================================
+#     search = (request.args.get("search") or "").strip()
+
+#     if search:
+#         like = f"%{search}%"
+#         customers = execute_query(c, f"""
+#             SELECT * FROM customers
+#             WHERE {ci_like('full_name', '?')}
+#                OR {ci_like('phone', '?')}
+#                OR {ci_like('id_number', '?')}
+#                OR {ci_like('email', '?')}
+#             ORDER BY full_name
+#         """, (like, like, like, like)).fetchall()
+#     else:
+#         customers = execute_query(c, "SELECT * FROM customers ORDER BY full_name").fetchall()
+
+#     conn.close()
+
+#     return render_template(
+#         "customers.html",
+#         title="Customers",
+#         customers=customers,
+#         search=search
+#     )
+
+
 @app.route("/customers", methods=["GET", "POST"])
 @login_required
 @staff_required
@@ -6855,6 +7612,26 @@ def customers():
         terms_accepted = 1 if request.form.get("terms_accepted") == "on" else 0
         signature_data = request.form.get("signature_data", "").strip()
 
+        # ✅ STRICT 2MB FILE SIZE CHECK (Prevents iPhone photo bloat)
+        MAX_FILE_SIZE = 2 * 1024 * 1024 # 2 MB
+        
+        if id_photo and id_photo.filename:
+            id_photo.seek(0, os.SEEK_END)
+            if id_photo.tell() > MAX_FILE_SIZE:
+                id_photo.seek(0)
+                flash("ID photo is too large (max 2MB). Please open the photo in your gallery, take a screenshot, and upload the screenshot instead.", "danger")
+                conn.close()
+                return redirect(url_for("customers"))
+            id_photo.seek(0)
+
+        if customer_photo and customer_photo.filename:
+            customer_photo.seek(0, os.SEEK_END)
+            if customer_photo.tell() > MAX_FILE_SIZE:
+                customer_photo.seek(0)
+                flash("Customer photo is too large (max 2MB). Please open the photo in your gallery, take a screenshot, and upload the screenshot instead.", "danger")
+                conn.close()
+                return redirect(url_for("customers"))
+            customer_photo.seek(0)
 
         # ✅ Validate the formats
         is_valid, error_msg = validate_namibian_identity(phone, id_number)
@@ -6871,13 +7648,14 @@ def customers():
                 conn.close()
                 return redirect(url_for("customers"))
 
-
         if not full_name or not phone:
             flash("Name and phone are required.", "danger")
+            conn.close()
             return redirect(url_for("customers"))
         
         if not terms_accepted:
             flash("You must accept the Terms & Conditions.", "danger")
+            conn.close()
             return redirect(url_for("customers"))
         
         # Create username
@@ -6889,21 +7667,17 @@ def customers():
             else:
                 username = f"cust_{phone}"
         
-
-        
         import secrets
         import string
-        # ✅ Generate a policy-compliant random password (10 chars, letters + digits + special)
+        # ✅ Generate a policy-compliant random password
         alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
         temp_password = ''.join(secrets.choice(alphabet) for _ in range(12))
-        # Guarantee at least one of each class in case of unlucky draw
         temp_password = (
             secrets.choice(string.ascii_letters)
             + secrets.choice(string.digits)
             + secrets.choice("!@#$%^&*")
             + ''.join(secrets.choice(alphabet) for _ in range(9))
         )
-        # Shuffle so the classes aren't always at the start
         temp_list = list(temp_password)
         secrets.SystemRandom().shuffle(temp_list)
         temp_password = ''.join(temp_list)
@@ -6921,22 +7695,14 @@ def customers():
                 user_id = user_result['id'] if isinstance(user_result, dict) else user_result[0]
             else:
                 flash("Error: User created but ID not found.", "danger")
+                conn.close()
                 return redirect(url_for("customers"))
-        except sqlite3.IntegrityError:
+        except Exception as e: # Catching general exception to handle both SQLite and Postgres unique violations
+            conn.rollback()
             flash(f"Username '{username}' already exists.", "danger")
+            conn.close()
             return redirect(url_for("customers"))
         
-        # Insert customer
-        # execute_query(c, """
-        #     INSERT INTO customers (
-        #         full_name, id_number, phone, email, address, user_id,
-        #         terms_accepted, terms_accepted_date, signature_data, verification_status
-        #     ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'Pending')
-        # """, (full_name, id_number, phone, email, address, user_id, 
-        #       terms_accepted, signature_data))
-        
-        # customer_id = c.lastrowid
-
         # Get the gender from the form
         gender = request.form.get("gender", "").strip()
 
@@ -6948,13 +7714,7 @@ def customers():
         """, (full_name, id_number, phone, email, address, user_id,
               terms_accepted, signature_data, gender))
 
-        # if is_postgres:
-        #     customer_result = execute_query(c, "SELECT id FROM customers WHERE user_id = ?", (user_id,)).fetchone()
-        #     if customer_result:
-        #         customer_id = customer_result['id'] if isinstance(customer_result, dict) else customer_result[0]
-        
         session["customer_id"] = customer_id
-        
 
         log_audit(
             action="customer_create",
@@ -6962,7 +7722,6 @@ def customers():
             entity_id=customer_id,
             details=f"Registered customer '{full_name}' (phone: {phone})"
         )
-
 
         # ✅ Save documents
         UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
@@ -6973,6 +7732,7 @@ def customers():
             ok, err, ext = validate_upload(id_photo)
             if not ok:
                 flash(f"ID document rejected: {err}", "danger")
+                conn.close()
                 return redirect(url_for("customers"))
 
             uploaded = False
@@ -6986,7 +7746,6 @@ def customers():
                         INSERT INTO customer_documents (customer_id, document_type, file_path)
                         VALUES (?, 'id_copy', ?)
                     """, (customer_id, file_url))
-                    flash("ID document uploaded successfully!", "success")
                     uploaded = True
                 except Exception as e:
                     print(f"❌ Cloudinary upload failed: {e}")
@@ -6995,16 +7754,16 @@ def customers():
             if not uploaded:
                 try:
                     filename = f"id_{customer_id}_{secure_filename(id_photo.filename)}"
-                    filepath = os.path.join(PRIVATE_UPLOAD_FOLDER, filename)
+                    filepath = os.path.join(UPLOAD_FOLDER, filename)
                     id_photo.save(filepath)
                     execute_query(c, """
                         INSERT INTO customer_documents (customer_id, document_type, file_path)
                         VALUES (?, 'id_copy', ?)
-                    """, (customer_id, f"private_uploads/{filename}"))
-                    flash("ID document saved securely!", "success")
+                    """, (customer_id, f"uploads/{filename}"))
                 except Exception as e:
                     print(f"❌ Local save failed: {e}")
                     flash("Error uploading ID document.", "danger")
+                    conn.close()
                     return redirect(url_for("customers"))
 
         # ✅ Handle Customer Photo
@@ -7012,6 +7771,7 @@ def customers():
             ok, err, ext = validate_upload(customer_photo)
             if not ok:
                 flash(f"Customer photo rejected: {err}", "danger")
+                conn.close()
                 return redirect(url_for("customers"))
 
             uploaded = False
@@ -7024,15 +7784,6 @@ def customers():
                         INSERT INTO customer_documents (customer_id, document_type, file_path)
                         VALUES (?, 'customer_photo', ?)
                     """, (customer_id, file_url))
-                    flash("Customer photo uploaded successfully!", "success")
-
-                    log_audit(
-                        action="document_upload",
-                        entity_type="customer",
-                        entity_id=customer_id,
-                        details=f"Uploaded {doc_type} for customer #{customer_id}"
-                    )
-
                     uploaded = True
                 except Exception as e:
                     print(f"❌ Cloudinary upload failed: {e}")
@@ -7040,21 +7791,18 @@ def customers():
             if not uploaded:
                 try:
                     filename = f"photo_{customer_id}_{secure_filename(customer_photo.filename)}"
-                    filepath = os.path.join(PRIVATE_UPLOAD_FOLDER, filename)
+                    filepath = os.path.join(UPLOAD_FOLDER, filename)
                     customer_photo.save(filepath)
                     execute_query(c, """
                         INSERT INTO customer_documents (customer_id, document_type, file_path)
                         VALUES (?, 'customer_photo', ?)
-                    """, (customer_id, f"private_uploads/{filename}"))
-                    flash("Customer photo saved securely!", "success")
+                    """, (customer_id, f"uploads/{filename}"))
                 except Exception as e:
                     print(f"❌ Local save failed: {e}")
                     flash("Error uploading customer photo.", "danger")
+                    conn.close()
                     return redirect(url_for("customers"))
 
-
-
-        
         conn.commit()
         conn.close()
         
@@ -7064,9 +7812,8 @@ def customers():
         
         return redirect(url_for("customers"))
     
-
     # =============================================
-    # SEARCH FILTER (case-insensitive on both DBs)
+    # GET / SEARCH FILTER
     # =============================================
     search = (request.args.get("search") or "").strip()
 
@@ -7091,6 +7838,7 @@ def customers():
         customers=customers,
         search=search
     )
+
 
 
 @app.route("/customers/<int:customer_id>/view")
@@ -9802,6 +10550,177 @@ def rental_agreement_pdf(rental_id):
 
 
 
+# @app.route("/customers/<int:customer_id>/edit", methods=["GET", "POST"])
+# @login_required
+# @staff_required
+# def edit_customer(customer_id):
+#     """Edit customer details."""
+#     from datetime import datetime
+#     import os
+    
+#     conn = db()
+#     c = conn.cursor()
+    
+#     # Check if Cloudinary is configured
+#     use_cloudinary = all([
+#         os.environ.get("CLOUDINARY_CLOUD_NAME"),
+#         os.environ.get("CLOUDINARY_API_KEY"),
+#         os.environ.get("CLOUDINARY_API_SECRET")
+#     ])
+    
+#     if use_cloudinary:
+#         try:
+#             import cloudinary
+#             import cloudinary.uploader
+#             cloudinary.config(
+#                 cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
+#                 api_key=os.environ.get("CLOUDINARY_API_KEY"),
+#                 api_secret=os.environ.get("CLOUDINARY_API_SECRET")
+#             )
+#         except:
+#             use_cloudinary = False
+    
+#     customer = execute_query(c, "SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+#     if not customer:
+#         flash("Customer not found.", "danger")
+#         return redirect(url_for("customers"))
+    
+#     if request.method == "POST":
+#         full_name = request.form.get("full_name", "").strip()
+#         id_number = request.form.get("id_number", "").strip()
+#         phone = request.form.get("phone", "").strip()
+#         email = request.form.get("email", "").strip()
+#         address = request.form.get("address", "").strip()
+#         verification_status = request.form.get("verification_status", "Pending")
+
+
+
+#         # ✅ Validate the formats
+#         is_valid, error_msg = validate_namibian_identity(phone, id_number)
+#         if not is_valid:
+#             flash(error_msg, "danger")
+#             conn.close()
+#             return redirect(url_for("edit_customer", customer_id=customer_id))
+
+
+
+#         if not full_name or not phone:
+#             flash("Name and phone are required.", "danger")
+#             return redirect(url_for("edit_customer", customer_id=customer_id))
+        
+#         id_photo = request.files.get("id_photo") if request.files else None
+#         customer_photo = request.files.get("customer_photo") if request.files else None
+
+
+#         # Get gender from form
+#         gender = request.form.get("gender", "").strip()
+
+#         execute_query(c, """
+#             UPDATE customers 
+#             SET full_name = ?, id_number = ?, phone = ?, email = ?, address = ?,
+#                 verification_status = ?, gender = ?
+#             WHERE id = ?
+#         """, (full_name, id_number, phone, email, address, verification_status, gender, customer_id))
+
+#         # execute_query(c, """
+#         #     UPDATE customers 
+#         #     SET full_name = ?, id_number = ?, phone = ?, email = ?, address = ?,
+#         #         verification_status = ?
+#         #     WHERE id = ?
+#         # """, (full_name, id_number, phone, email, address, verification_status, customer_id))
+        
+#         # Handle document uploads with fallback
+#         from werkzeug.utils import secure_filename
+#         UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
+#         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+        
+#         if id_photo and id_photo.filename:
+#             uploaded = False
+#             if use_cloudinary:
+#                 try:
+#                     upload_result = cloudinary.uploader.upload(id_photo)
+#                     file_url = upload_result['secure_url']
+#                     execute_query(c, """
+#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
+#                         VALUES (?, 'id_copy', ?)
+#                     """, (customer_id, file_url))
+#                     uploaded = True
+#                 except Exception as e:
+#                     print(f"❌ Cloudinary upload failed: {e}")
+            
+#             if not uploaded:
+#                 try:
+#                     filename = f"id_{customer_id}_{secure_filename(id_photo.filename)}"
+#                     id_photo.save(os.path.join(UPLOAD_FOLDER, filename))
+#                     execute_query(c, """
+#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
+#                         VALUES (?, 'id_copy', ?)
+#                     """, (customer_id, f"uploads/{filename}"))
+#                 except Exception as e:
+#                     flash("Error uploading ID document.", "danger")
+#                     return redirect(url_for("edit_customer", customer_id=customer_id))
+        
+#         if customer_photo and customer_photo.filename:
+#             uploaded = False
+#             if use_cloudinary:
+#                 try:
+#                     upload_result = cloudinary.uploader.upload(customer_photo)
+#                     file_url = upload_result['secure_url']
+#                     execute_query(c, """
+#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
+#                         VALUES (?, 'customer_photo', ?)
+#                     """, (customer_id, file_url))
+#                     uploaded = True
+#                 except Exception as e:
+#                     print(f"❌ Cloudinary upload failed: {e}")
+            
+#             if not uploaded:
+#                 try:
+#                     filename = f"photo_{customer_id}_{secure_filename(customer_photo.filename)}"
+#                     customer_photo.save(os.path.join(UPLOAD_FOLDER, filename))
+#                     execute_query(c, """
+#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
+#                         VALUES (?, 'customer_photo', ?)
+#                     """, (customer_id, f"uploads/{filename}"))
+#                 except Exception as e:
+#                     flash("Error uploading customer photo.", "danger")
+#                     return redirect(url_for("edit_customer", customer_id=customer_id))
+        
+#         conn.commit()
+
+#         conn.close()
+        
+#         flash(f"Customer '{full_name}' updated successfully!", "success")
+
+#         log_audit(
+#             action="customer_edit",
+#             entity_type="customer",
+#             entity_id=customer_id,
+#             details=f"Edited customer '{full_name}'"
+#         )        
+#         return redirect(url_for("customers"))
+    
+    
+#     documents = execute_query(c, """
+#         SELECT * FROM customer_documents 
+#         WHERE customer_id = ? 
+#         ORDER BY uploaded_at DESC
+#     """, (customer_id,)).fetchall()
+    
+#     for doc in documents:
+#         if doc.get("uploaded_at"):
+#             if isinstance(doc["uploaded_at"], datetime):
+#                 doc["uploaded_at"] = doc["uploaded_at"].strftime("%Y-%m-%d %H:%M")
+    
+#     conn.close()
+    
+#     return render_template(
+#         "edit_customer.html",
+#         title="Edit Customer",
+#         customer=customer,
+#         documents=documents
+#     )
+
 @app.route("/customers/<int:customer_id>/edit", methods=["GET", "POST"])
 @login_required
 @staff_required
@@ -9835,6 +10754,7 @@ def edit_customer(customer_id):
     customer = execute_query(c, "SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
     if not customer:
         flash("Customer not found.", "danger")
+        conn.close()
         return redirect(url_for("customers"))
     
     if request.method == "POST":
@@ -9845,7 +10765,29 @@ def edit_customer(customer_id):
         address = request.form.get("address", "").strip()
         verification_status = request.form.get("verification_status", "Pending")
 
+        id_photo = request.files.get("id_photo") if request.files else None
+        customer_photo = request.files.get("customer_photo") if request.files else None
 
+        # ✅ STRICT 2MB FILE SIZE CHECK (Prevents iPhone photo bloat)
+        MAX_FILE_SIZE = 2 * 1024 * 1024 # 2 MB
+        
+        if id_photo and id_photo.filename:
+            id_photo.seek(0, os.SEEK_END)
+            if id_photo.tell() > MAX_FILE_SIZE:
+                id_photo.seek(0)
+                flash("ID photo is too large (max 2MB). Please open the photo in your gallery, take a screenshot, and upload the screenshot instead.", "danger")
+                conn.close()
+                return redirect(url_for("edit_customer", customer_id=customer_id))
+            id_photo.seek(0)
+
+        if customer_photo and customer_photo.filename:
+            customer_photo.seek(0, os.SEEK_END)
+            if customer_photo.tell() > MAX_FILE_SIZE:
+                customer_photo.seek(0)
+                flash("Customer photo is too large (max 2MB). Please open the photo in your gallery, take a screenshot, and upload the screenshot instead.", "danger")
+                conn.close()
+                return redirect(url_for("edit_customer", customer_id=customer_id))
+            customer_photo.seek(0)
 
         # ✅ Validate the formats
         is_valid, error_msg = validate_namibian_identity(phone, id_number)
@@ -9854,16 +10796,11 @@ def edit_customer(customer_id):
             conn.close()
             return redirect(url_for("edit_customer", customer_id=customer_id))
 
-
-
         if not full_name or not phone:
             flash("Name and phone are required.", "danger")
+            conn.close()
             return redirect(url_for("edit_customer", customer_id=customer_id))
         
-        id_photo = request.files.get("id_photo") if request.files else None
-        customer_photo = request.files.get("customer_photo") if request.files else None
-
-
         # Get gender from form
         gender = request.form.get("gender", "").strip()
 
@@ -9874,13 +10811,6 @@ def edit_customer(customer_id):
             WHERE id = ?
         """, (full_name, id_number, phone, email, address, verification_status, gender, customer_id))
 
-        # execute_query(c, """
-        #     UPDATE customers 
-        #     SET full_name = ?, id_number = ?, phone = ?, email = ?, address = ?,
-        #         verification_status = ?
-        #     WHERE id = ?
-        # """, (full_name, id_number, phone, email, address, verification_status, customer_id))
-        
         # Handle document uploads with fallback
         from werkzeug.utils import secure_filename
         UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
@@ -9910,6 +10840,7 @@ def edit_customer(customer_id):
                     """, (customer_id, f"uploads/{filename}"))
                 except Exception as e:
                     flash("Error uploading ID document.", "danger")
+                    conn.close()
                     return redirect(url_for("edit_customer", customer_id=customer_id))
         
         if customer_photo and customer_photo.filename:
@@ -9936,10 +10867,10 @@ def edit_customer(customer_id):
                     """, (customer_id, f"uploads/{filename}"))
                 except Exception as e:
                     flash("Error uploading customer photo.", "danger")
+                    conn.close()
                     return redirect(url_for("edit_customer", customer_id=customer_id))
         
         conn.commit()
-
         conn.close()
         
         flash(f"Customer '{full_name}' updated successfully!", "success")
@@ -9952,7 +10883,7 @@ def edit_customer(customer_id):
         )        
         return redirect(url_for("customers"))
     
-    
+    # GET request logic
     documents = execute_query(c, """
         SELECT * FROM customer_documents 
         WHERE customer_id = ? 
@@ -9972,8 +10903,6 @@ def edit_customer(customer_id):
         customer=customer,
         documents=documents
     )
-
-
 
 
 # =============================================
@@ -13053,7 +13982,15 @@ def customer_portal():
         SELECT COUNT(*) FROM warnings 
         WHERE customer_id = ? AND status = 'Unsigned'
     """, (customer["id"],))
-    
+
+
+    stations = execute_query(c, """
+        SELECT id, name, location, status, status_message 
+        FROM branches 
+        WHERE is_active = 1 
+        ORDER BY name
+    """).fetchall()
+
     # 8. Close connection ONLY after everything is fetched
     conn.close()
     
@@ -13065,7 +14002,8 @@ def customer_portal():
         points=points,
         damage_balance=damage_balance,
         privacy_request=privacy_request,
-        unsigned_warnings=unsigned_warnings
+        unsigned_warnings=unsigned_warnings,
+        stations=stations
     )
 
 

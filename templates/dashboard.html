@@ -5,6 +5,54 @@
 <h1>Daily Rental Dashboard</h1>
 <p class="sub">RAB – Rent A Bike daily rental overview and monitoring.</p>
 
+{% if unread_announcements and unread_announcements > 0 %}
+<div class="card" style="background:#fdeceb; border-left: 5px solid #dc3545; margin-bottom: 20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+            <h3 style="color:#dc3545; margin:0;">📢 You have {{ unread_announcements }} unread announcement(s)!</h3>
+            <p style="color:#667085; margin-top:5px;">Please check the announcements page for important updates.</p>
+        </div>
+        <a href="{{ url_for('announcements') }}" class="btn yellow">View Announcements</a>
+    </div>
+</div>
+{% endif %}
+
+
+
+
+<!-- ✅ STATION STATUS BOARD — uses the app's native .card + .badge look -->
+<div class="card" style="padding:16px 18px; margin-bottom:16px;">
+    <h3 style="margin:0 0 14px 0; font-size:1.05rem; color:#0d1f46;">📍 Station Status Board</h3>
+    <div style="display:flex; flex-wrap:wrap; gap:10px;">
+        {% for s in stations %}
+            {% set st = s.status or 'Open' %}
+            {% set cls = {'Open':'green','Away':'amber'}.get(st, 'red') %}
+            {% set ico = {'Open':'✅','Away':'🟡'}.get(st, '⛔') %}
+            <div style="border:1px solid #e4e7ec; border-radius:10px; padding:10px 14px; min-width:170px; background:#fff;">
+                <div style="font-weight:700; color:#0d1f46;">{{ s.name }}</div>
+                <span class="badge {{ cls }}" style="margin-top:6px;">{{ ico }} {{ st|upper }}</span>
+                {% if s.status_message %}
+                    <div style="color:#667085; font-size:12px; margin-top:6px;">{{ s.status_message }}</div>
+                {% endif %}
+            </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- ✅ LIVE BANNER — class-driven, matches the board palette -->
+<div id="stationStatusBanner" class="status-banner">
+    <div style="display:flex; align-items:center; gap:12px;">
+        <span id="bannerIcon" style="font-size:24px;">⚠️</span>
+        <div>
+            <strong id="bannerTitle" style="font-size:1.05rem;">Station status</strong>
+            <div id="bannerMsg" style="color:#667085; font-size:0.92rem; margin-top:3px;"></div>
+        </div>
+    </div>
+</div>
+
+
+
+
 <div class="grid">
     <div class="metric">
         <div class="label">Available Bikes</div>
@@ -227,5 +275,45 @@ document.getElementById('cancelModal').addEventListener('click', function(e) {
         </table>
     </div>
 </div>
+
+<script>
+(function () {
+    const banner  = document.getElementById('stationStatusBanner');
+    const title   = document.getElementById('bannerTitle');
+    const msg     = document.getElementById('bannerMsg');
+    const icon    = document.getElementById('bannerIcon');
+    const dropSel = document.querySelector('select[name="expected_end_station_id"]');
+    const pickSel = document.querySelector('select[name="start_station_id"]');
+
+    function update() {
+        const sel = (dropSel && dropSel.selectedIndex > 0) ? dropSel : pickSel;
+        const opt = sel ? sel.options[sel.selectedIndex] : null;
+
+        if (!opt || !opt.value) { banner.className = 'status-banner'; return; }
+
+        const status  = opt.dataset.status || 'Open';
+        const message = opt.dataset.message || '';
+        const name    = opt.textContent.trim();
+
+        banner.className = 'status-banner ' +
+            (status === 'Open' ? 'open' : status === 'Away' ? 'away' : 'closed');
+        icon.textContent = status === 'Open' ? '✅' : status === 'Away' ? '🟡' : '⛔';
+
+        if (status === 'Open') {
+            title.textContent = '✓ ' + name + ' is OPEN';
+            msg.textContent   = message || 'Safe to pick up / drop off here.';
+        } else {
+            title.textContent = name + ' is ' + status.toUpperCase();
+            msg.textContent   = message || 'Do not use this station until it reopens.';
+        }
+    }
+
+    if (dropSel) dropSel.addEventListener('change', update);
+    if (pickSel) pickSel.addEventListener('change', update);
+    update();   // ✅ show the pre-selected pickup station immediately on load
+})();
+</script>
+
+
 
 {% endblock %}

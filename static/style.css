@@ -307,3 +307,12 @@ footer {
     border: 1px solid #ffd700;
     color: #a66300;
 }
+
+.badge.red   { background:#fdeceb; color:#dc3545; }
+.badge.amber { background:#fff8e1; color:#b8860b; }
+
+/* Live banner variants */
+.status-banner        { display:none; margin-bottom:18px; padding:14px 18px; border-radius:10px; border-left:5px solid #ccc; }
+.status-banner.open   { display:block; background:#e7f6ec; border-left-color:#1e7e34; }
+.status-banner.away   { display:block; background:#fff8e1; border-left-color:#b8860b; }
+.status-banner.closed { display:block; background:#fdeceb; border-left-color:#dc3545; }

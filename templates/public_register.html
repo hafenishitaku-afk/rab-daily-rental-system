@@ -52,14 +52,36 @@
                     </select>
                 </label>
 
-                <label>
+                <!-- <label>
                     ID / Passport Copy
                     <input type="file" name="id_photo" accept="image/*,.pdf">
                 </label>
                 <label>
                     Customer Photo
                     <input type="file" name="customer_photo" accept="image/*">
+                </label> -->
+
+
+                <!-- Customer Photo Input -->
+                <label>
+                    Customer Photo *
+                    <input type="file" name="customer_photo" accept="image/*" required onchange="checkFileSize(this, 'Customer Photo')">
+                    <small style="color:#dc3545; display:block; margin-top:4px;">
+                        ⚠️ Maximum file size: 2MB. Please upload a screenshot, not an original camera photo.
+                    </small>
                 </label>
+
+                <!-- ID/Passport Photo Input -->
+                <label>
+                    ID / Passport Copy *
+                    <input type="file" name="id_photo" accept="image/*" required onchange="checkFileSize(this, 'ID/Passport Photo')">
+                    <small style="color:#dc3545; display:block; margin-top:4px;">
+                        ⚠️ Maximum file size: 2MB. Please upload a screenshot, not an original camera photo.
+                    </small>
+                </label>
+
+
+
             </div>
             
             <!-- Terms & Conditions -->
@@ -183,6 +205,25 @@ document.getElementById('regForm').addEventListener('submit', function() {
     btn.style.opacity = '0.7';
     btn.disabled = true;
 });
+</script>
+
+
+<script>
+function checkFileSize(input, fieldName) {
+    if (input.files && input.files[0]) {
+        const maxSize = 2 * 1024 * 1024; // 2 Megabytes
+        const fileSize = input.files[0].size;
+        
+        if (fileSize > maxSize) {
+            // Calculate size in MB for the alert
+            const sizeMB = (fileSize / (1024 * 1024)).toFixed(2);
+            alert(`❌ ${fieldName} is too large (${sizeMB} MB).\n\nPlease open the photo in your phone's gallery, take a screenshot, and upload the screenshot instead. Original camera photos are not allowed.`);
+            
+            // Clear the input so they can try again
+            input.value = "";
+        }
+    }
+}
 </script>
 
 {% endblock %}

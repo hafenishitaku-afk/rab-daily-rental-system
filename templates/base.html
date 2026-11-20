@@ -95,6 +95,7 @@
                 <a href="{{ url_for('announcements') }}" style="color:#ffe500;">📢 Announcements</a>
                 <a href="{{ url_for('reminder_logs') }}" style="color:#ffe500;">🔔 Reminders</a>
                 <a href="{{ url_for('pending_registrations') }}" style="color:#ffe500;">📝 Pending Regs</a>
+                 <a href="{{ url_for('appointments') }}" style="color:#ffe500;">📝 Appointments</a>
                 
                 <!-- Reports & Analytics (Manager+) -->
                 {% if session.role == 'admin' or session.role == 'manager' %}
