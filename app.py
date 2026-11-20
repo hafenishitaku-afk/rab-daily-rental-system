@@ -2600,7 +2600,6 @@ def staff_verify():
 
 
 
-
 @app.route("/login", methods=["GET", "POST"])
 @limiter.limit("50 per minute;200 per hour")
 def login():
@@ -2625,7 +2624,7 @@ def login():
         # Fetch the user
         user = execute_query(c, "SELECT * FROM users WHERE username = ?", (login_username,)).fetchone()
         
-        # Check if user exists and verify password (replace with your actual password check logic)
+        # Check if user exists and verify password
         if user and check_password_hash(user["password_hash"], password):
             
             # ✅ Check lockout status
@@ -2650,17 +2649,37 @@ def login():
             session["user_id"] = user["id"]
             session["username"] = user["username"]
             session["role"] = user["role"]
+            session["full_name"] = user.get("full_name") # ✅ Added this
+            session["station_id"] = user.get("branch_id") # ✅ Added this
             
             # Clear lockout on successful login
             execute_query(c, "DELETE FROM login_attempts WHERE user_id = ?", (user["id"],))
             conn.commit()
+            
+            # ✅ AUDIT LOG (Added before closing connection)
+            log_audit(
+                action="login_success",
+                entity_type="user",
+                entity_id=user["id"],
+                details=f"User {user['username']} logged in successfully",
+                user_id=user["id"],
+                username=user["username"],
+                user_role=user["role"]
+            )
+
             conn.close()
             flash(f"Hello 👋 once again! Welcome back 🤝, {user['full_name'] or user['username']}❗", "success")
 
-            return redirect(url_for("home"))
+            return redirect(url_for("dashboard")) # ✅ Redirect to dashboard, not home
             
         else:
-            # Failed login logic (increment failed attempts, etc.)
+            # Failed login logic
+            log_audit(
+                action="login_failed",
+                entity_type="user",
+                details=f"Failed login attempt for username: {login_username}",
+                username=login_username
+            )
             flash("Invalid username or password.", "danger")
             conn.close()
             return redirect(url_for("login"))
