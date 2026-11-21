@@ -7531,6 +7531,21 @@ def start_rental():
         ORDER BY avn.created_at DESC LIMIT 5
     """).fetchall()
 
+
+    # ✅ Fetch recent GENERAL voice notes for the Start Rental page
+    recent_voice_notes = execute_query(c, """
+        SELECT avn.id, avn.file_path, avn.created_at, u.full_name 
+        FROM announcement_voice_notes avn
+        JOIN users u ON u.id = avn.user_id
+        WHERE avn.announcement_id IS NULL
+        ORDER BY avn.created_at DESC LIMIT 5
+    """).fetchall()
+
+    # ✅ Format the timestamp cleanly (UTC → Namibia local)
+    for v in recent_voice_notes:
+        if isinstance(v["created_at"], datetime):
+            v["created_at"] = (v["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+
     conn.close()
 
     namibia_tz = pytz.timezone('Africa/Windhoek')
