@@ -75,6 +75,22 @@
                         <span>✏️ Updated: {{ a.updated_at }}</span>
                         {% endif %}
                     </div>
+                    
+                    <!-- ✅ VOICE REPLY TOGGLE BUTTON -->
+                    <button type="button" class="btn small" style="margin-top:12px; background:#0d1f46; color:#fff;" onclick="toggleRecorder({{ a.id }})">
+                        🎙️ Record Voice Reply
+                    </button>
+                    
+                    <!-- ✅ HIDDEN RECORDER FORM (Specific to this announcement.id) -->
+                    <div id="recorder-{{ a.id }}" style="display:none; margin-top:10px; padding:10px; background:#f8f9fa; border-radius:8px;">
+                        <form method="post" action="{{ url_for('upload_announcement_voice', announcement_id=a.id) }}" enctype="multipart/form-data" class="voice-form">
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                            <button type="button" class="record-btn" style="background:#dc3545; color:white; border:none; padding:8px 12px; border-radius:4px; cursor:pointer; font-weight:bold;">⏺️ Hold to Record</button>
+                            <span class="record-status" style="margin-left:10px; font-size:13px; color:#667085;"></span>
+                            <input type="file" name="audio_data" class="audio-input" style="display:none;">
+                        </form>
+                    </div>
+
                 </div>
                 <div style="display:flex;gap:5px;flex-wrap:wrap;">
                     {% if session.role == 'admin' %}
@@ -108,5 +124,87 @@
 <div class="actions">
     <a href="{{ url_for('dashboard') }}" class="btn">← Back to Dashboard</a>
 </div>
+
+<!-- ✅ UNIVERSAL VOICE RECORDER JAVASCRIPT -->
+<script>
+// Toggle visibility of the recorder in the announcements list
+function toggleRecorder(id) {
+    const el = document.getElementById('recorder-' + id);
+    el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    let mediaRecorder;
+    let audioChunks = [];
+    let activeBtn = null;
+    let activeStatus = null;
+    let activeInput = null;
+
+    async function initRecorder() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) audioChunks.push(event.data);
+            };
+            mediaRecorder.onstop = () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                const audioFile = new File([audioBlob], 'voice_note.webm', { type: 'audio/webm' });
+                const dataTransfer = new DataTransfer();
+                dataTransfer.items.add(audioFile);
+                activeInput.files = dataTransfer.files;
+                activeStatus.innerText = "✅ Saved! Submitting...";
+                activeBtn.disabled = true;
+                setTimeout(() => { activeBtn.closest('form').submit(); }, 500);
+            };
+        } catch (err) {
+            console.error("Mic error:", err);
+            if(activeStatus) activeStatus.innerText = "❌ Please allow mic access.";
+        }
+    }
+
+    function startRecording(e) {
+        e.preventDefault();
+        activeBtn = e.target;
+        activeStatus = activeBtn.nextElementSibling;
+        activeInput = activeBtn.parentElement.querySelector('.audio-input');
+        
+        if (!mediaRecorder) {
+            initRecorder().then(() => {
+                if (mediaRecorder && mediaRecorder.state === 'inactive') {
+                    mediaRecorder.start();
+                    activeBtn.innerText = "⏹️ Release to Stop";
+                    activeBtn.style.background = "#ff4444";
+                    activeStatus.innerText = "🔴 Recording...";
+                }
+            });
+        } else if (mediaRecorder.state === 'inactive') {
+            audioChunks = [];
+            mediaRecorder.start();
+            activeBtn.innerText = "⏹️ Release to Stop";
+            activeBtn.style.background = "#ff4444";
+            activeStatus.innerText = "🔴 Recording...";
+        }
+    }
+
+    function stopRecording(e) {
+        e.preventDefault();
+        if (activeBtn && mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+            activeBtn.innerText = "⏺️ Hold to Record";
+            activeBtn.style.background = "#dc3545";
+        }
+    }
+
+    // Attach to ALL record buttons on the page dynamically
+    document.querySelectorAll('.record-btn').forEach(btn => {
+        btn.addEventListener('mousedown', startRecording);
+        btn.addEventListener('mouseup', stopRecording);
+        btn.addEventListener('mouseleave', stopRecording);
+        btn.addEventListener('touchstart', startRecording, { passive: false });
+        btn.addEventListener('touchend', stopRecording, { passive: false });
+    });
+});
+</script>
 
 {% endblock %}

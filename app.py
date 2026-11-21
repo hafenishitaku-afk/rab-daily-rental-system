@@ -192,6 +192,89 @@ app.wsgi_app = ProxyFix(
 )
 
 
+# ============================================================
+# ✅ PAGE ACCESS CONTROL SYSTEM
+# ============================================================
+
+# Pages that require explicit permission to view
+SENSITIVE_PAGES = {
+    'workers':           {'label': 'Workers',            'route': 'workers'},
+    'audit_log_master':  {'label': 'Audit Log Master',   'route': 'audit_log_master'},
+    'station_payouts':   {'label': 'Station Payouts',    'route': 'station_payouts'},
+    'exports':           {'label': 'Exports',            'route': 'exports'},
+    'users':             {'label': 'Users',              'route': 'users'},
+    'profile':           {'label': 'Profile',            'route': 'profile'},
+}
+
+def has_page_permission(page_key, user_id=None):
+    """Check if a user has view permission for a sensitive page."""
+    if not user_id:
+        user_id = session.get("user_id")
+    if not user_id:
+        return False
+    
+    # Admin (user_id=1) always has access
+    if user_id == 1:
+        return True
+    
+    conn = db()
+    c = conn.cursor()
+    row = execute_query(c, 
+        "SELECT can_view FROM page_permissions WHERE user_id = ? AND page_key = ?",
+        (user_id, page_key)
+    ).fetchone()
+    conn.close()
+    
+    return bool(row and row.get("can_view", False))
+
+
+def page_required(page_key):
+    """Decorator that blocks access to sensitive pages without permission."""
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not has_page_permission(page_key):
+                flash(f"🔒 Access denied. You do not have permission to view '{SENSITIVE_PAGES[page_key]['label']}'.", "danger")
+                return redirect(url_for("dashboard"))
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+
+@app.context_processor
+def inject_page_permissions():
+    """Make can_view_* flags available in ALL templates automatically."""
+    user_id = session.get("user_id")
+    if not user_id:
+        return {}
+    
+    permissions = {}
+    for page_key in SENSITIVE_PAGES:
+        permissions[f'can_view_{page_key}'] = has_page_permission(page_key, user_id)
+    
+    return permissions
+
+
+@app.before_request
+def update_last_active():
+    """Updates the user's last_active timestamp on every request."""
+    if session.get("user_id"):
+        conn = db()
+        c = conn.cursor()
+        try:
+            if os.environ.get("DATABASE_URL"):
+                # PostgreSQL syntax
+                execute_query(c, "UPDATE users SET last_active = CURRENT_TIMESTAMP WHERE id = ?", (session["user_id"],))
+            else:
+                # SQLite syntax
+                execute_query(c, "UPDATE users SET last_active = datetime('now') WHERE id = ?", (session["user_id"],))
+            conn.commit()
+        except Exception as e:
+            print(f"⚠️ Error updating activity: {e}")
+        finally:
+            conn.close()
+
+
 @app.before_request
 def _enforce_idle_timeout():
     """
@@ -1935,8 +2018,28 @@ def init_db():
             )
         """)
 
+        # ✅ ANNOUNCEMENT VOICE NOTES TABLE
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS announcement_voice_notes (
+                id SERIAL PRIMARY KEY,
+                announcement_id INTEGER,
+                user_id INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
-    
+        # ✅ BIKE PARTS TRAINING TABLE
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS bike_parts (
+                id SERIAL PRIMARY KEY,
+                part_name TEXT NOT NULL,
+                description TEXT,
+                image_path TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+       
     # =============================================
     # ADD DEFAULT RATES (Works for both)
     # =============================================
@@ -2139,7 +2242,12 @@ def ensure_schema_columns():
 
         # branches — status tracking
         ("branches", "status", "TEXT DEFAULT 'Open'", "TEXT DEFAULT 'Open'"),
-        ("branches", "status_message", "TEXT", "TEXT"),        
+        ("branches", "status_message", "TEXT", "TEXT"), 
+                # users — activity tracking
+        ("users", "last_active", "TEXT", "TIMESTAMP"),       
+        ("users", "totp_secret", "TEXT", "TEXT"),
+        ("users", "totp_enabled", "BOOLEAN DEFAULT FALSE", "BOOLEAN DEFAULT FALSE"),
+
 
     ]
 
@@ -2949,9 +3057,114 @@ def customer_login():
     # GET
     return render_template("customer_login.html", title="Customer Login")
 
+@app.route("/admin/page-access", methods=["GET", "POST"])
+@login_required
+def page_access_control():
+    """
+    Management page for sensitive page visibility.
+    Requires password + 2FA re-authentication.
+    """
+    from datetime import datetime, timedelta
+    
+    # Check if user has already re-authenticated recently (within 30 minutes)
+    reauth_time = session.get("reauthenticated_at")
+    needs_reauth = True
+    
+    if reauth_time:
+        try:
+            reauth_dt = datetime.fromisoformat(reauth_time)
+            if (datetime.utcnow() - reauth_dt) < timedelta(minutes=30):
+                needs_reauth = False
+        except:
+            pass
+    
+    # Only admin can manage page access
+    if session.get("role") != "admin":
+        flash("Access denied. Admins only.", "danger")
+        return redirect(url_for("dashboard"))
+    
+    if request.method == "POST" and needs_reauth:
+        # Verify password
+        password = request.form.get("password", "")
+        totp_code = request.form.get("totp_code", "").strip()
+        
+        # Get current user's password hash
+        conn = db()
+        c = conn.cursor()
+        user = execute_query(c, "SELECT password_hash, totp_secret, totp_enabled FROM users WHERE id = ?", 
+                            (session["user_id"],)).fetchone()
+        
+        if not user or not check_password_hash(user["password_hash"], password):
+            flash("Incorrect password.", "danger")
+            conn.close()
+            return redirect(url_for("page_access_control"))
+        
+        # Verify 2FA if enabled
+        if user.get("totp_enabled"):
+            if not totp_code or not pyotp.TOTP(user["totp_secret"]).verify(totp_code, valid_window=1):
+                flash("Invalid 2FA code.", "danger")
+                conn.close()
+                return redirect(url_for("page_access_control"))
+        
+        # Mark as re-authenticated
+        session["reauthenticated_at"] = datetime.utcnow().isoformat()
+        conn.close()
+        flash("✅ Re-authentication successful.", "success")
+        return redirect(url_for("page_access_control"))
+    
+    # GET request or after successful re-auth
+    conn = db()
+    c = conn.cursor()
+    
+    if request.method == "POST" and not needs_reauth:
+        # Process permission updates
+        for page_key in SENSITIVE_PAGES:
+            user_ids = request.form.getlist(f"view_{page_key}")
+            
+            # Reset all to FALSE first
+            execute_query(c, "UPDATE page_permissions SET can_view = FALSE WHERE page_key = ?", (page_key,))
+            
+            # Set selected users to TRUE
+            for uid in user_ids:
+                if uid:
+                    execute_query(c, """
+                        INSERT INTO page_permissions (user_id, page_key, can_view, can_edit)
+                        VALUES (?, ?, TRUE, TRUE)
+                        ON CONFLICT (user_id, page_key) DO UPDATE SET can_view = TRUE, can_edit = TRUE
+                    """, (int(uid), page_key))
+        
+        conn.commit()
+        flash("✅ Page permissions updated successfully.", "success")
+        return redirect(url_for("page_access_control"))
+    
+    # Load all users and current permissions
+    all_users = execute_query(c, "SELECT id, full_name, role, username FROM users ORDER BY full_name").fetchall()
+    
+    permissions = {}
+    for page_key in SENSITIVE_PAGES:
+        rows = execute_query(c, 
+            "SELECT user_id FROM page_permissions WHERE page_key = ? AND can_view = TRUE", 
+            (page_key,)).fetchall()
+        permissions[page_key] = [r["user_id"] for r in rows]
+    
+    conn.close()
+    
+    return render_template(
+        "page_access_control.html",
+        title="Page Access Control",
+        all_users=all_users,
+        permissions=permissions,
+        sensitive_pages=SENSITIVE_PAGES,
+        needs_reauth=needs_reauth
+    )
 
-
-
+@app.route("/admin/page-access/logout")
+@login_required
+def page_access_control_logout():
+    """Clear re-authentication session."""
+    session.pop("reauthenticated_at", None)
+    flash("🔒 Page Access Control locked.", "info")
+    return redirect(url_for("dashboard"))
 
 
 def _gather_customer_data(customer_id):
@@ -3430,7 +3643,15 @@ def manager_required(f):
     """Manager and admin access."""
     return role_required(['admin', 'manager'])(f)
 
+def mask_phone(phone):
+    if not phone or len(phone) < 7:
+        return "•" * (len(phone) if phone else 0)
+    return phone[:3] + "*" * (len(phone) - 6) + phone[-3:]
 
+def mask_id(idn):
+    if not idn or len(idn) < 8:
+        return "•" * (len(idn) if idn else 0)
+    return idn[:4] + "*" * (len(idn) - 8) + idn[-4:]
 
 
 def admin_required(f):
@@ -3509,7 +3730,7 @@ def log_downloads(response):
 
 @app.route("/users")
 @login_required
-@admin_required
+@page_required('users')
 def users():
     """View all users (Admin only)."""
     conn = db()
@@ -3659,7 +3880,7 @@ def appointments():
 
 @app.route("/workers")
 @login_required
-@manager_required
+@page_required('workers') 
 def workers():
     """List all non-customer workers with their job titles and station."""
     conn = db()
@@ -3728,6 +3949,87 @@ def workers():
         total_workers=total_workers,
         total_active=total_active,
     )
+
+
+# @app.route("/announcements/<int:announcement_id>/voice-note", methods=["POST"])
+# @login_required
+# def upload_announcement_voice(announcement_id):
+#     audio_data = request.files.get("audio_data")
+#     if audio_data:
+#         # ✅ Use Cloudinary (or local fallback)
+#         uploaded = False
+#         db_path = None
+        
+#         if CLOUDINARY_CLOUD_NAME:
+#             try:
+#                 result = cloudinary.uploader.upload(audio_data, resource_type="video")
+#                 db_path = result["secure_url"]
+#                 uploaded = True
+#             except Exception:
+#                 pass
+                
+#         if not uploaded:
+#             import uuid, os
+#             filename = f"ann_voice_{uuid.uuid4().hex}.webm"
+#             filepath = os.path.join(BASE, 'static', 'audio', filename)
+#             os.makedirs(os.path.dirname(filepath), exist_ok=True)
+#             audio_data.save(filepath)
+#             db_path = f"audio/{filename}"
+
+#         conn = db()
+#         c = conn.cursor()
+#         execute_query(c, """
+#             INSERT INTO announcement_voice_notes (announcement_id, user_id, file_path)
+#             VALUES (?, ?, ?)
+#         """, (announcement_id, session["user_id"], db_path))
+#         conn.commit()
+#         conn.close()
+        
+#         flash("Voice note posted!", "success")
+#     return redirect(url_for("view_announcement", announcement_id=announcement_id))
+
+
+@app.route("/announcements/<int:announcement_id>/voice-note", methods=["POST"])
+@login_required
+def upload_announcement_voice(announcement_id):
+    audio_data = request.files.get("audio_data")
+    if audio_data:
+        # ✅ Use Cloudinary (or local fallback)
+        uploaded = False
+        db_path = None
+        
+        # ✅ FIX: Safely check if Cloudinary is configured
+        cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
+        
+        if cloud_name:
+            try:
+                import cloudinary.uploader
+                result = cloudinary.uploader.upload(audio_data, resource_type="video")
+                db_path = result["secure_url"]
+                uploaded = True
+            except Exception as e:
+                print(f"❌ Cloudinary voice upload failed: {e}")
+                
+        if not uploaded:
+            import uuid
+            filename = f"ann_voice_{uuid.uuid4().hex}.webm"
+            filepath = os.path.join(BASE, 'static', 'audio', filename)
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            audio_data.save(filepath)
+            db_path = f"audio/{filename}"
+
+        conn = db()
+        c = conn.cursor()
+        execute_query(c, """
+            INSERT INTO announcement_voice_notes (announcement_id, user_id, file_path)
+            VALUES (?, ?, ?)
+        """, (announcement_id, session["user_id"], db_path))
+        conn.commit()
+        conn.close()
+        
+        flash("Voice note posted!", "success")
+        
+    return redirect(url_for("view_announcement", announcement_id=announcement_id))
 
 
 @app.route("/workers/<int:worker_id>")
@@ -3964,7 +4266,7 @@ def worker_edit(worker_id):
 
 @app.route("/reports/station-payouts")
 @login_required
-@admin_required
+@page_required('station_payouts')
 def station_payouts():
     """Calculate weekly payouts for stations based on Starts and Ends."""
     from datetime import datetime, timedelta
@@ -4100,6 +4402,43 @@ def awards():
 
     conn.close()
     return render_template("awards_admin.html", title="Award System", users=users, customers=customers, awards=awards_list)
+
+
+@app.route("/training/bike-parts", methods=["GET", "POST"])
+@login_required
+@manager_required # Only managers/admins can upload images
+def bike_parts():
+    conn = db()
+    c = conn.cursor()
+
+    if request.method == "POST":
+        part_name = request.form.get("part_name", "").strip()
+        description = request.form.get("description", "").strip()
+        image = request.files.get("image")
+
+        if not part_name or not image:
+            flash("Part name and image are required.", "danger")
+        else:
+            import os
+            from werkzeug.utils import secure_filename
+            UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
+            os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+            
+            filename = f"part_{secure_filename(image.filename)}"
+            image.save(os.path.join(UPLOAD_FOLDER, filename))
+            image_path = f"uploads/{filename}"
+
+            execute_query(c, """
+                INSERT INTO bike_parts (part_name, description, image_path)
+                VALUES (?, ?, ?)
+            """, (part_name, description, image_path))
+            conn.commit()
+            flash(f"Part '{part_name}' added successfully.", "success")
+            return redirect(url_for("bike_parts"))
+
+    parts = execute_query(c, "SELECT * FROM bike_parts ORDER BY part_name").fetchall()
+    conn.close()
+    return render_template("bike_parts.html", title="Bike Parts Training", parts=parts)
 
 
 @app.route("/awards/my")
@@ -5607,6 +5946,7 @@ def pending_registrations():
     return render_template("pending_registrations.html", title="Registrations History", pending=pending)
 
 
+
 @app.route("/admin/pending-registrations/<int:reg_id>/approve", methods=["POST"])
 @login_required
 @staff_required
@@ -5616,40 +5956,55 @@ def approve_registration(reg_id):
     c = conn.cursor()
 
     reg = execute_query(c, "SELECT * FROM pending_registrations WHERE id = ?", (reg_id,)).fetchone()
-    
+
     if not reg:
         conn.close()
         flash("Registration not found.", "danger")
         return redirect(url_for("pending_registrations"))
 
+    # Already approved? Prevent duplicate user/customer creation.
+    if reg["status"] == "Approved":
+        conn.close()
+        flash("This registration was already approved.", "info")
+        return redirect(url_for("pending_registrations"))
+
     # 1. Create the User account
     import secrets
     import string
-    # Generate a temporary password
     alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
     temp_password = ''.join(secrets.choice(alphabet) for _ in range(10))
-    
-    username = reg["phone"] # Use phone as username
-    
-    # Ensure username is unique
+
+    username = reg["phone"]
     existing_user = execute_query(c, "SELECT id FROM users WHERE username = ?", (username,)).fetchone()
     if existing_user:
         username = f"cust_{reg['phone']}"
-    
-    # ✅ Use insert_and_get_id to get the user ID (works on both SQLite and Postgres)
+
     user_id = insert_and_get_id(c, """
         INSERT INTO users (username, password_hash, role, full_name, email)
         VALUES (?, ?, 'customer', ?, ?)
     """, (username, generate_password_hash(temp_password), reg["full_name"], reg["email"]))
 
     # 2. Create the Customer record
-    # ✅ Use insert_and_get_id to get the customer ID
+    # ✅ FIX: 'gender' added to the column list AND placed INSIDE the params tuple.
+    #         (It was previously a stray 4th argument, causing the TypeError,
+    #          and was never inserted — which is why gender showed as '—'.)
     customer_id = insert_and_get_id(c, """
         INSERT INTO customers (
-            full_name, id_number, phone, email, address, user_id, 
-            terms_accepted, signature_data, verification_status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Verified')
-    """, (reg["full_name"], reg["id_number"], reg["phone"], reg["email"], reg["address"], user_id, reg["terms_accepted"], reg["signature_data"]), reg.get("gender") or "Unknown",)
+            full_name, id_number, phone, email, address, user_id,
+            terms_accepted, terms_accepted_date, signature_data,
+            verification_status, gender
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'Verified', ?)
+    """, (
+        reg["full_name"],
+        reg["id_number"],
+        reg["phone"],
+        reg["email"],
+        reg["address"],
+        user_id,
+        reg["terms_accepted"],
+        reg["signature_data"],
+        reg.get("gender") or "Unknown"   # ✅ now inside the tuple, as the 9th value
+    ))
 
     # 3. Move the uploaded documents to the customer's official folder
     if reg["id_photo_path"]:
@@ -5657,7 +6012,7 @@ def approve_registration(reg_id):
             INSERT INTO customer_documents (customer_id, document_type, file_path)
             VALUES (?, 'id_copy', ?)
         """, (customer_id, reg["id_photo_path"]))
-        
+
     if reg["customer_photo_path"]:
         execute_query(c, """
             INSERT INTO customer_documents (customer_id, document_type, file_path)
@@ -5674,7 +6029,7 @@ def approve_registration(reg_id):
             reviewed_at = CURRENT_TIMESTAMP
         WHERE id = ?
     """, (username, temp_password, session["user_id"], reg_id))
-    
+
     conn.commit()
     conn.close()
 
@@ -5687,7 +6042,7 @@ def approve_registration(reg_id):
 
     flash(f"Customer '{reg['full_name']}' approved! Username: {username} | Password: {temp_password}", "success")
     flash("Please give these credentials to the customer so they can log in and change their password.", "info")
-    
+
     return redirect(url_for("pending_registrations"))
 
 
@@ -5700,7 +6055,7 @@ def delete_registration(reg_id):
     c = conn.cursor()
 
     reg = execute_query(c, "SELECT * FROM pending_registrations WHERE id = ?", (reg_id,)).fetchone()
-    
+
     if not reg:
         conn.close()
         flash("Registration not found.", "danger")
@@ -5719,40 +6074,44 @@ def delete_registration(reg_id):
     flash(f"Registration for '{reg['full_name']}' has been deleted.", "success")
     return redirect(url_for("pending_registrations"))
 
+
 @app.route("/admin/pending-registrations/<int:reg_id>/reject", methods=["POST"])
 @login_required
 @staff_required
 def reject_registration(reg_id):
     """Reject a registration with a reason."""
     reason = request.form.get("reason", "").strip()
-    
+
     if not reason:
         flash("You must provide a reason for rejection.", "danger")
         return redirect(url_for("pending_registrations"))
 
     conn = db()
     c = conn.cursor()
-    
+
     reg = execute_query(c, "SELECT full_name FROM pending_registrations WHERE id = ?", (reg_id,)).fetchone()
-    
+    if not reg:
+        conn.close()
+        flash("Registration not found.", "danger")
+        return redirect(url_for("pending_registrations"))
+
     execute_query(c, """
         UPDATE pending_registrations 
         SET status = 'Rejected', rejection_reason = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP 
         WHERE id = ?
     """, (reason, session["user_id"], reg_id))
-    
+
     conn.commit()
     conn.close()
-    
+
     log_audit(
         action="registration_reject",
         entity_type="customer",
         details=f"Rejected registration for {reg['full_name']}. Reason: {reason}"
     )
-    
+
     flash(f"Registration rejected. Reason: {reason}", "warning")
     return redirect(url_for("pending_registrations"))
-
 
 
 @app.route("/items", methods=["GET", "POST"])
@@ -5796,6 +6155,48 @@ def items():
     """).fetchall()
     conn.close()
     return render_template("items.html", title="Items", items=items_list)
+
+
+@app.route("/training/bike-parts/<int:part_id>/delete", methods=["POST"])
+@login_required
+@manager_required
+def delete_bike_part(part_id):
+    """Delete a bike part record + its image file."""
+    conn = db()
+    c = conn.cursor()
+
+    part = execute_query(c, "SELECT part_name, image_path FROM bike_parts WHERE id = ?", (part_id,)).fetchone()
+
+    if not part:
+        conn.close()
+        flash("Part not found.", "danger")
+        return redirect(url_for("bike_parts"))
+
+    # ✅ 1. Delete the physical file (only if it's a local path, not a Cloudinary URL)
+    if part["image_path"] and not part["image_path"].startswith("http"):
+        import os
+        filepath = os.path.join(BASE, 'static', part["image_path"])
+        try:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        except Exception as e:
+            print(f"❌ Could not delete image file: {e}")
+
+    # ✅ 2. Delete the database row
+    execute_query(c, "DELETE FROM bike_parts WHERE id = ?", (part_id,))
+    conn.commit()
+
+    # ✅ 3. Audit it
+    log_audit(
+        action="bike_part_delete",
+        entity_type="bike_part",
+        entity_id=part_id,
+        details=f"Deleted bike part '{part['part_name']}'"
+    )
+
+    conn.close()
+    flash(f"Part '{part['part_name']}' deleted.", "success")
+    return redirect(url_for("bike_parts"))
 
 
 @app.route("/items/<int:item_id>/edit", methods=["GET", "POST"])
@@ -6123,6 +6524,7 @@ def reset_customer_password(customer_id):
 
 @app.route("/profile", methods=["GET", "POST"])
 @login_required
+@page_required('profile') 
 def profile():
     """View and edit own profile."""
     conn = db()
@@ -6557,6 +6959,42 @@ def dashboard():
         ORDER BY name
     """).fetchall()
 
+    # ✅ Count pending online registrations
+    pending_online_regs = get_single_value(c, "SELECT COUNT(*) FROM pending_registrations WHERE status = 'Pending'")
+
+
+    # ✅ Get all online users (active in the last 5 minutes)
+    if is_postgres:
+        online_users = execute_query(c, """
+            SELECT id, full_name, role, 
+                   EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - last_active)) as seconds_ago
+            FROM users
+            WHERE EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - last_active)) < 300
+            ORDER BY role, full_name
+        """).fetchall()
+    else:
+        online_users = execute_query(c, """
+            SELECT id, full_name, role, 
+                   (julianday('now') - julianday(last_active)) * 86400 as seconds_ago
+            FROM users
+            WHERE (julianday('now') - julianday(last_active)) * 86400 < 300
+            ORDER BY role, full_name
+        """).fetchall()
+
+    recent_voice_notes = execute_query(c, """
+        SELECT avn.id, avn.file_path, avn.created_at, u.full_name 
+        FROM announcement_voice_notes avn
+        JOIN users u ON u.id = avn.user_id
+        WHERE avn.announcement_id IS NULL
+        ORDER BY avn.created_at DESC LIMIT 5
+    """).fetchall()
+
+    for v in recent_voice_notes:
+        if isinstance(v["created_at"], datetime):
+            v["created_at"] = (v["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+  
+
+
     conn.close()
     
     # Ensure revenue is never negative
@@ -6577,7 +7015,10 @@ def dashboard():
         station_performance=station_performance,
         retention=RETENTION,
         unread_announcements=unread_announcements,
-        stations=stations # <-- Add this        
+        stations=stations,
+        recent_voice_notes=recent_voice_notes,
+        pending_online_regs=pending_online_regs,
+        online_users=online_users  # <-- Add this        
     )
 
 # @app.route("/rentals/start", methods=["GET", "POST"])
@@ -7020,13 +7461,24 @@ def start_rental():
             except Exception as e:
                 print(f"skip item {item_id}: {e}")
 
+        # ✅ Fetch recent GENERAL voice notes for the Start Rental page
+        recent_voice_notes = execute_query(c, """
+            SELECT avn.file_path, avn.created_at, u.full_name 
+            FROM announcement_voice_notes avn
+            JOIN users u ON u.id = avn.user_id
+            WHERE avn.announcement_id IS NULL
+            ORDER BY avn.created_at DESC LIMIT 5
+        """).fetchall()
+
+
         # Audit Log
         log_audit(
             action="rental_start",
             entity_type="daily_rental",
             entity_id=rental_id,
             details=f"Started rental #{rental_id} — customer_id={customer_id}, bike_id={bicycle_id}, "
-                    f"deposit=N${deposit_paid:.2f}, station_id={start_station_id}"
+                    f"deposit=N${deposit_paid:.2f}, station_id={start_station_id}",
+            recent_voice_notes=recent_voice_notes        
         )
 
         conn.commit()
@@ -7070,6 +7522,15 @@ def start_rental():
         ORDER BY name
     """).fetchall()        
 
+
+    # ✅ Fetch recent voice notes for the Start Rental page
+    recent_voice_notes = execute_query(c, """
+        SELECT avn.file_path, avn.created_at, u.full_name 
+        FROM announcement_voice_notes avn
+        JOIN users u ON u.id = avn.user_id
+        ORDER BY avn.created_at DESC LIMIT 5
+    """).fetchall()
+
     conn.close()
 
     namibia_tz = pytz.timezone('Africa/Windhoek')
@@ -7083,7 +7544,8 @@ def start_rental():
         stations=stations,
         items_list=items_list,
         default_station_id=default_station_id,
-        now=local_now.strftime("%Y-%m-%dT%H:%M")
+        now=local_now.strftime("%Y-%m-%dT%H:%M"),
+        recent_voice_notes=recent_voice_notes
     )
 
 
@@ -7327,7 +7789,7 @@ def audit_log_page():
 
 @app.route("/audit-log-master")
 @login_required
-@admin_required
+@page_required('audit_log_master')
 def audit_log_master():
     """The HIDDEN Audit Log page with Export and Cleanup buttons."""
     conn = db()
@@ -7982,16 +8444,57 @@ def customers():
     else:
         customers = execute_query(c, "SELECT * FROM customers ORDER BY full_name").fetchall()
 
+
+    privacy_mode = session.get("privacy_mode", True)  # ON by default
+
+    for c_row in customers:
+        c_row["phone_display"] = c_row["phone"] if not privacy_mode else mask_phone(c_row["phone"])
+        c_row["id_display"]    = c_row["id_number"] if not privacy_mode else mask_id(c_row["id_number"])
+
+
     conn.close()
 
     return render_template(
         "customers.html",
         title="Customers",
         customers=customers,
-        search=search
+        search=search,
+        privacy_mode=privacy_mode
     )
 
 
+@app.route("/customers/<int:customer_id>/reveal", methods=["POST"])
+@login_required
+@staff_required
+def reveal_customer_contact(customer_id):
+    """Return full contact for one customer + audit who asked."""
+    conn = db()
+    c = conn.cursor()
+    row = execute_query(c, "SELECT full_name, phone, id_number FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    if not row:
+        conn.close()
+        return jsonify({"error": "not found"}), 404
+
+    log_audit(
+        action="customer_contact_reveal",
+        entity_type="customer",
+        entity_id=customer_id,
+        details=f"Revealed contact for '{row['full_name']}'"
+    )
+    conn.commit()
+    conn.close()
+    return jsonify({"phone": row["phone"], "id_number": row["id_number"]})
+
+@app.route("/privacy-mode/toggle", methods=["POST"])
+@login_required
+@staff_required
+def toggle_privacy_mode():
+    session["privacy_mode"] = not session.get("privacy_mode", True)
+    state = "ENABLED" if session["privacy_mode"] else "DISABLED"
+    log_audit(action="privacy_mode_change", entity_type="user",
+              entity_id=session["user_id"], details=f"Privacy mode {state}")
+    flash(f"🛡️ Privacy mode {state}.", "info")
+    return redirect(request.referrer or url_for("customers"))
 
 @app.route("/customers/<int:customer_id>/view")
 @login_required
@@ -11797,10 +12300,69 @@ def delete_bicycle(bicycle_id):
 
 
 
+# @app.route("/announcements")
+# @login_required
+# def announcements():
+#     """View all announcements."""
+#     from datetime import datetime
+    
+#     conn = db()
+#     c = conn.cursor()
+    
+#     user_id = session["user_id"]
+#     user_role = session.get("role", "staff")
+    
+#     # Get all active announcements with read status
+#     announcements_list = execute_query(c, """
+#         SELECT 
+#             a.*,
+#             CASE WHEN ar.id IS NOT NULL THEN 1 ELSE 0 END AS is_read
+#         FROM announcements a
+#         LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.user_id = ?
+#         WHERE a.is_active = 1
+#         ORDER BY a.is_pinned DESC, a.priority DESC, a.created_at DESC
+#     """, (user_id,)).fetchall()
+    
+#     # ✅ FIX: Format datetime for each announcement (PostgreSQL returns datetime objects)
+#     for announcement in announcements_list:
+#         if announcement.get("created_at"):
+#             if isinstance(announcement["created_at"], datetime):
+#                 announcement["created_at"] = announcement["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+#             elif isinstance(announcement["created_at"], str):
+#                 announcement["created_at"] = announcement["created_at"]
+        
+#         if announcement.get("updated_at"):
+#             if isinstance(announcement["updated_at"], datetime):
+#                 announcement["updated_at"] = announcement["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
+#             elif isinstance(announcement["updated_at"], str):
+#                 announcement["updated_at"] = announcement["updated_at"]
+    
+#     # ✅ FIX: Get unread count as integer
+#     unread_result = execute_query(c, """
+#         SELECT COUNT(*) as count FROM announcements a
+#         LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.user_id = ?
+#         WHERE a.is_active = 1 AND ar.id IS NULL
+#     """, (user_id,)).fetchone()
+    
+#     unread_count = unread_result['count'] if isinstance(unread_result, dict) else unread_result[0] if unread_result else 0
+
+
+
+#     conn.close()
+    
+#     return render_template(
+#         "announcements.html",
+#         title="Announcements",
+#         announcements=announcements_list,
+#         unread_count=unread_count,
+#         user_role=user_role
+#     )
+
+
 @app.route("/announcements")
 @login_required
 def announcements():
-    """View all announcements."""
+    """View all announcements and mark them as read."""
     from datetime import datetime
     
     conn = db()
@@ -11809,7 +12371,21 @@ def announcements():
     user_id = session["user_id"]
     user_role = session.get("role", "staff")
     
-    # Get all active announcements with read status
+    # 1. ✅ AUTOMATICALLY MARK ALL ACTIVE ANNOUNCEMENTS AS READ FOR THIS USER
+    # This prevents the "unread" badge from persisting once they open the page
+    execute_query(c, """
+        INSERT INTO announcement_reads (announcement_id, user_id, read_at)
+        SELECT a.id, ?, CURRENT_TIMESTAMP
+        FROM announcements a
+        WHERE a.is_active = 1
+        AND NOT EXISTS (
+            SELECT 1 FROM announcement_reads ar 
+            WHERE ar.announcement_id = a.id AND ar.user_id = ?
+        )
+    """, (user_id, user_id))
+    conn.commit()
+    
+    # 2. Get all active announcements with read status
     announcements_list = execute_query(c, """
         SELECT 
             a.*,
@@ -11820,21 +12396,27 @@ def announcements():
         ORDER BY a.is_pinned DESC, a.priority DESC, a.created_at DESC
     """, (user_id,)).fetchall()
     
-    # ✅ FIX: Format datetime for each announcement (PostgreSQL returns datetime objects)
+    # # Format datetime for each announcement
     for announcement in announcements_list:
-        if announcement.get("created_at"):
-            if isinstance(announcement["created_at"], datetime):
-                announcement["created_at"] = announcement["created_at"].strftime("%Y-%m-%d %H:%M:%S")
-            elif isinstance(announcement["created_at"], str):
-                announcement["created_at"] = announcement["created_at"]
+    #     if announcement.get("created_at"):
+    #         if isinstance(announcement["created_at"], datetime):
+    #             announcement["created_at"] = announcement["created_at"].strftime("%Y-%m-%d %H:%M:%S")
         
-        if announcement.get("updated_at"):
-            if isinstance(announcement["updated_at"], datetime):
-                announcement["updated_at"] = announcement["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
-            elif isinstance(announcement["updated_at"], str):
-                announcement["updated_at"] = announcement["updated_at"]
+    #     if announcement.get("updated_at"):
+    #         if isinstance(announcement["updated_at"], datetime):
+    #             announcement["updated_at"] = announcement["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
     
-    # ✅ FIX: Get unread count as integer
+
+
+            if announcement.get("created_at") and isinstance(announcement["created_at"], datetime):
+                announcement["created_at"] = (announcement["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+
+            if announcement.get("updated_at") and isinstance(announcement["updated_at"], datetime):
+                announcement["updated_at"] = (announcement["updated_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+
+    # Get unread count (will be 0 after the INSERT above, but good for other pages like Dashboard)
     unread_result = execute_query(c, """
         SELECT COUNT(*) as count FROM announcements a
         LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.user_id = ?
@@ -11842,7 +12424,7 @@ def announcements():
     """, (user_id,)).fetchone()
     
     unread_count = unread_result['count'] if isinstance(unread_result, dict) else unread_result[0] if unread_result else 0
-    
+
     conn.close()
     
     return render_template(
@@ -11854,18 +12436,85 @@ def announcements():
     )
 
 
+# @app.route("/announcements/<int:announcement_id>")
+# @login_required
+# def view_announcement(announcement_id):
+#     """View a single announcement with comments."""
+#     from datetime import datetime
+    
+#     conn = db()
+#     c = conn.cursor()
+    
+#     is_postgres = os.environ.get("DATABASE_URL") is not None
+    
+#     user_id = session["user_id"]
+    
+#     # Get announcement
+#     announcement = execute_query(c, """
+#         SELECT * FROM announcements WHERE id = ? AND is_active = 1
+#     """, (announcement_id,)).fetchone()
+    
+#     if not announcement:
+#         flash("Announcement not found.", "danger")
+#         return redirect(url_for("announcements"))
+    
+#     # ✅ FIX: Format datetime for announcement
+#     if announcement.get("created_at"):
+#         if isinstance(announcement["created_at"], datetime):
+#             announcement["created_at"] = announcement["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+    
+#     if announcement.get("updated_at"):
+#         if isinstance(announcement["updated_at"], datetime):
+#             announcement["updated_at"] = announcement["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
+    
+#     # ✅ FIX: Mark as read - handle PostgreSQL vs SQLite
+#     if is_postgres:
+#         # PostgreSQL syntax
+#         execute_query(c, """
+#             INSERT INTO announcement_reads (announcement_id, user_id)
+#             VALUES (%s, %s)
+#             ON CONFLICT (announcement_id, user_id) DO NOTHING
+#         """, (announcement_id, user_id))
+#     else:
+#         # SQLite syntax
+#         execute_query(c, """
+#             INSERT OR IGNORE INTO announcement_reads (announcement_id, user_id)
+#             VALUES (?, ?)
+#         """, (announcement_id, user_id))
+    
+#     # Get comments
+#     comments = execute_query(c, """
+#         SELECT * FROM announcement_comments 
+#         WHERE announcement_id = ? 
+#         ORDER BY created_at ASC
+#     """, (announcement_id,)).fetchall()
+    
+#     # ✅ FIX: Format datetime for comments
+#     for comment in comments:
+#         if comment.get("created_at"):
+#             if isinstance(comment["created_at"], datetime):
+#                 comment["created_at"] = comment["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+    
+#     conn.commit()
+#     conn.close()
+    
+#     return render_template(
+#         "view_announcement.html",
+#         title=announcement["title"],
+#         announcement=announcement,
+#         comments=comments
+#     )
 
 @app.route("/announcements/<int:announcement_id>")
 @login_required
 def view_announcement(announcement_id):
-    """View a single announcement with comments."""
-    from datetime import datetime
+    """View a single announcement with comments and voice notes."""
+    from datetime import datetime, timedelta
     
     conn = db()
     c = conn.cursor()
     
     is_postgres = os.environ.get("DATABASE_URL") is not None
-    
     user_id = session["user_id"]
     
     # Get announcement
@@ -11875,7 +12524,16 @@ def view_announcement(announcement_id):
     
     if not announcement:
         flash("Announcement not found.", "danger")
+        conn.close()
         return redirect(url_for("announcements"))
+    
+    # ✅ AUDIT: Log that this user viewed this specific announcement
+    log_audit(
+        action="announcement_view",
+        entity_type="announcement",
+        entity_id=announcement_id,
+        details=f"User {session.get('username', 'Unknown')} viewed announcement: '{announcement['title']}'"
+    )
     
     # ✅ FIX: Format datetime for announcement
     if announcement.get("created_at"):
@@ -11888,14 +12546,12 @@ def view_announcement(announcement_id):
     
     # ✅ FIX: Mark as read - handle PostgreSQL vs SQLite
     if is_postgres:
-        # PostgreSQL syntax
         execute_query(c, """
             INSERT INTO announcement_reads (announcement_id, user_id)
             VALUES (%s, %s)
             ON CONFLICT (announcement_id, user_id) DO NOTHING
         """, (announcement_id, user_id))
     else:
-        # SQLite syntax
         execute_query(c, """
             INSERT OR IGNORE INTO announcement_reads (announcement_id, user_id)
             VALUES (?, ?)
@@ -11908,12 +12564,31 @@ def view_announcement(announcement_id):
         ORDER BY created_at ASC
     """, (announcement_id,)).fetchall()
     
-    # ✅ FIX: Format datetime for comments
+    # ✅ NEW: Get voice notes for this announcement
+    voice_notes = execute_query(c, """
+        SELECT avn.id, avn.file_path, avn.created_at, u.full_name 
+        FROM announcement_voice_notes avn
+        JOIN users u ON u.id = avn.user_id
+        WHERE avn.announcement_id = ?
+        ORDER BY avn.created_at DESC
+    """, (announcement_id,)).fetchall()
+    
+
+
+    # Format datetime for comments (UTC → Namibia local)
     for comment in comments:
         if comment.get("created_at"):
             if isinstance(comment["created_at"], datetime):
-                comment["created_at"] = comment["created_at"].strftime("%Y-%m-%d %H:%M:%S")
-    
+                comment["created_at"] = (comment["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+
+   
+    # Format datetime for voice notes (UTC → Namibia local)
+    for note in voice_notes:
+        if note.get("created_at"):
+            if isinstance(note["created_at"], datetime):
+                note["created_at"] = (note["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
+
+
     conn.commit()
     conn.close()
     
@@ -11921,8 +12596,85 @@ def view_announcement(announcement_id):
         "view_announcement.html",
         title=announcement["title"],
         announcement=announcement,
-        comments=comments
+        comments=comments,
+        voice_notes=voice_notes  # ✅ Pass voice notes to the template
     )
+
+
+@app.route("/voice-notes/general", methods=["POST"])
+@login_required
+def upload_general_voice_note():
+    """Handle voice notes recorded from the Start Rental page (General Broadcasts)."""
+    audio_data = request.files.get("audio_data")
+    if audio_data:
+        uploaded = False
+        db_path = None
+        cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
+        
+        if cloud_name:
+            try:
+                import cloudinary.uploader
+                result = cloudinary.uploader.upload(audio_data, resource_type="video")
+                db_path = result["secure_url"]
+                uploaded = True
+            except Exception as e:
+                print(f"❌ Cloudinary voice upload failed: {e}")
+                
+        if not uploaded:
+            import uuid
+            filename = f"general_voice_{uuid.uuid4().hex}.webm"
+            filepath = os.path.join(BASE, 'static', 'audio', filename)
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            audio_data.save(filepath)
+            db_path = f"audio/{filename}"
+
+        conn = db()
+        c = conn.cursor()
+        # announcement_id is NULL for general broadcasts
+        execute_query(c, """
+            INSERT INTO announcement_voice_notes (announcement_id, user_id, file_path)
+            VALUES (NULL, ?, ?)
+        """, (session["user_id"], db_path))
+        conn.commit()
+        conn.close()        
+        flash("General voice update posted!", "success")
+
+    # ✅ Redirect back to the page that submitted the form (dashboard OR start_rental)
+    return redirect(request.referrer or url_for("dashboard"))
+
+
+@app.route("/voice-notes/<int:voice_id>/delete", methods=["POST"])
+@login_required
+def delete_voice_note(voice_id):
+    """Delete a voice note (Admin only)."""
+    if session.get("role") != "admin":
+        flash("Access denied. Admins only.", "danger")
+        return redirect(url_for("dashboard"))
+
+    conn = db()
+    c = conn.cursor()
+    note = execute_query(c, "SELECT announcement_id, file_path FROM announcement_voice_notes WHERE id = ?", (voice_id,)).fetchone()
+
+    if note:
+        # Delete physical file if local
+        if note["file_path"] and not note["file_path"].startswith("http"):
+            import os
+            filepath = os.path.join(BASE, 'static', note["file_path"])
+            if os.path.exists(filepath):
+                os.remove(filepath)
+        execute_query(c, "DELETE FROM announcement_voice_notes WHERE id = ?", (voice_id,))
+        conn.commit()
+        flash("Voice note deleted.", "success")
+
+    conn.close()
+
+    # ✅ Redirect back to where the delete was triggered (whitelist to prevent open-redirect)
+    next_url = request.form.get("next", "")
+    allowed = [url_for("dashboard"), url_for("start_rental")]
+    if note and note["announcement_id"]:
+        allowed.append(url_for("view_announcement", announcement_id=note["announcement_id"]))
+    return redirect(next_url if next_url in allowed else url_for("dashboard"))
+
 
 @app.route("/2fa/setup", methods=["GET", "POST"])
 @login_required
@@ -12190,6 +12942,14 @@ def add_announcement_comment(announcement_id):
     ))
     
     conn.commit()
+
+    log_audit(
+        action="announcement_create",
+        entity_type="announcement",
+        details=f"Created announcement '{title}'"
+    )
+
+
     conn.close()
     
     flash("Comment added successfully!", "success")
@@ -13579,7 +14339,7 @@ def update_maintenance(record_id):
 
 @app.route("/exports")
 @login_required
-@manager_required
+@page_required('exports')
 def exports_page():
     """Export documents and reports page."""
     from datetime import datetime

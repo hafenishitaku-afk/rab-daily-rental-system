@@ -31,7 +31,43 @@
     </div>
 </div>
 
+<div class="card" style="background:#f8f9fa; border-left: 4px solid #0d1f46; margin-top: 20px;">
+    <h3>🎙️ Record a General Live Update</h3>
+    <p style="color:#667085; font-size:13px;">Leave a quick voice note for all staff starting rentals.</p>
+    
+    <form method="post" action="{{ url_for('upload_general_voice_note') }}" enctype="multipart/form-data" class="voice-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="button" class="record-btn" style="background:#dc3545; color:white; border:none; padding:10px 16px; border-radius:6px; cursor:pointer; font-weight:bold;">⏺️ Hold to Record</button>
+        <span class="record-status" style="margin-left:10px; font-size:13px; color:#667085;"></span>
+        <input type="file" name="audio_data" class="audio-input" style="display:none;">
+    </form>
 
+    <!-- Display recent general voice notes -->
+    {% if recent_voice_notes %}
+    <div style="margin-top: 15px; border-top: 1px solid #e4e7ec; padding-top: 15px;">
+        <h4 style="font-size: 14px; margin-bottom: 10px;">Recent Updates:</h4>
+        {% for v in recent_voice_notes %}
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px; background:white; padding:10px; border-radius:8px; border:1px solid #e4e7ec;">
+            <div style="flex:1;">
+                <div style="font-size:12px; font-weight:bold; color:#0d1f46;">{{ v.full_name }} <span style="color:#667085; font-weight:normal;">({{ v.created_at }})</span></div>
+                {% if v.file_path.startswith('http') %}
+                    <audio controls src="{{ v.file_path }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+                {% else %}
+                    <audio controls src="{{ url_for('static', filename=v.file_path) }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+                {% endif %}
+            </div>
+            {% if session.role == 'admin' %}
+            <form method="post" action="{{ url_for('delete_voice_note', voice_id=v.id) }}" onsubmit="return confirm('Delete this voice note?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="next" value="{{ request.url }}">
+                <button class="btn small" style="background:#dc3545; color:#fff;">🗑️</button>
+            </form>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+</div>
 
 
 <h1>Start New Rental</h1>

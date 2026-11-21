@@ -58,6 +58,51 @@
             <textarea name="comment" rows="2" placeholder="Write a comment..." style="flex:1;padding:10px;border-radius:8px;border:1px solid #ddd;font-family:inherit;" required></textarea>
             <button class="btn yellow" type="submit" style="padding:10px 20px;">💬 Post</button>
         </div>
+
+
+        <!-- ✅ DISPLAY EXISTING VOICE NOTES -->
+        {% if voice_notes %}
+        <div class="card" style="margin-top: 20px; background: #f8f9fa;">
+            <h3>🎙️ Voice Notes ({{ voice_notes|length }})</h3>
+            
+            {% for v in voice_notes %}
+            <div style="display:flex; justify-content:space-between; align-items:center; background:white; padding:12px; border-radius:8px; margin-bottom:10px; border:1px solid #e4e7ec;">
+                <div style="flex:1;">
+                    <div style="font-size:12px; font-weight:bold; color:#0d1f46;">
+                        {{ v.full_name }} <span style="color:#667085; font-weight:normal;">({{ v.created_at }})</span>
+                    </div>
+                    
+                    {% if v.file_path.startswith('http') %}
+                        <audio controls src="{{ v.file_path }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+                    {% else %}
+                        <audio controls src="{{ url_for('static', filename=v.file_path) }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+                    {% endif %}
+                </div>
+                
+                <!-- ✅ DELETE BUTTON (Admin Only) -->
+                {% if session.role == 'admin' %}
+                <form method="post" action="{{ url_for('delete_voice_note', voice_id=v.id) }}" style="margin-left:15px;" onsubmit="return confirm('Are you sure you want to delete this voice note?');">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="btn small" style="background:#dc3545; color:white; border:none; border-radius:4px; padding:6px 10px; cursor:pointer;">🗑️ Delete</button>
+                </form>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+<!-- Your existing "Leave a Voice Note" form goes here... -->
+
+        <div class="card">
+            <h3>🎙️ Leave a Voice Note</h3>
+            <form method="post" action="{{ url_for('upload_announcement_voice', announcement_id=announcement.id) }}" enctype="multipart/form-data" id="voiceForm">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="button" id="recordBtn" class="btn small" style="background:#dc3545; color:white;">⏺️ Hold to Record</button>
+                <span id="recordStatus" style="margin-left:10px; font-size:13px; color:#667085;"></span>
+                <input type="file" name="audio_data" id="audioInput" style="display:none;">
+            </form>
+        </div>
+
     </form>
     
     <!-- Comments List -->
@@ -79,8 +124,105 @@
     {% endif %}
 </div>
 
+
+
+
 <div class="actions">
     <a href="{{ url_for('announcements') }}" class="btn">← Back to Announcements</a>
 </div>
+
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const recordBtn = document.getElementById('recordBtn');
+    const recordStatus = document.getElementById('recordStatus');
+    const audioInput = document.getElementById('audioInput');
+    const voiceForm = document.getElementById('voiceForm');
+
+    let mediaRecorder;
+    let audioChunks = [];
+    let isRecording = false;
+
+    // 1. Initialize the MediaRecorder and request microphone permissions
+    async function initRecorder() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            mediaRecorder = new MediaRecorder(stream);
+
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                // Create a Blob from the recorded chunks
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                const audioFile = new File([audioBlob], 'voice_note.webm', { type: 'audio/webm' });
+                
+                // Attach the file to the hidden input field
+                const dataTransfer = new DataTransfer();
+                dataTransfer.items.add(audioFile);
+                audioInput.files = dataTransfer.files;
+
+                recordStatus.innerText = "✅ Recording saved! Submitting...";
+                recordBtn.disabled = true;
+                
+                // Auto-submit the form after a brief pause
+                setTimeout(() => {
+                    voiceForm.submit();
+                }, 500);
+            };
+        } catch (err) {
+            console.error("Microphone access denied or not supported:", err);
+            recordStatus.innerText = "❌ Please allow microphone access in your browser.";
+            recordBtn.disabled = true;
+        }
+    }
+
+    // 2. Start Recording
+    function startRecording(e) {
+        e.preventDefault();
+        if (!mediaRecorder) {
+            initRecorder().then(() => {
+                if (mediaRecorder && mediaRecorder.state === 'inactive') {
+                    mediaRecorder.start();
+                    isRecording = true;
+                    recordBtn.innerText = "⏹️ Release to Stop";
+                    recordBtn.style.background = "#ff4444"; // Bright red
+                    recordStatus.innerText = "🔴 Recording...";
+                }
+            });
+        } else if (mediaRecorder.state === 'inactive') {
+            audioChunks = []; // Clear any old data
+            mediaRecorder.start();
+            isRecording = true;
+            recordBtn.innerText = "⏹️ Release to Stop";
+            recordBtn.style.background = "#ff4444";
+            recordStatus.innerText = "🔴 Recording...";
+        }
+    }
+
+    // 3. Stop Recording
+    function stopRecording(e) {
+        e.preventDefault();
+        if (isRecording && mediaRecorder && mediaRecorder.state === 'recording') {
+            mediaRecorder.stop();
+            isRecording = false;
+            recordBtn.innerText = "⏺️ Hold to Record";
+            recordBtn.style.background = "#dc3545"; // Back to original red
+        }
+    }
+
+    // 4. Attach Events (Desktop: Mouse, Mobile: Touch)
+    recordBtn.addEventListener('mousedown', startRecording);
+    recordBtn.addEventListener('mouseup', stopRecording);
+    recordBtn.addEventListener('mouseleave', stopRecording); // Stop if they drag mouse away
+
+    recordBtn.addEventListener('touchstart', startRecording, { passive: false });
+    recordBtn.addEventListener('touchend', stopRecording, { passive: false });
+});
+</script>
+
 
 {% endblock %}

@@ -2,6 +2,8 @@
 
 {% block content %}
 
+<!-- ✅ CSRF Token for the Reveal AJAX Request -->
+<meta name="csrf-token" content="{{ csrf_token() }}">
 
 <h1>Customers</h1>
 <p class="sub">Register customers and complete verification before renting.</p>
@@ -48,7 +50,6 @@
                 </select>
             </label>
 
-
             <label>
                 ID / Passport Copy
                 <input type="file" name="id_photo" accept="image/*,.pdf">
@@ -63,36 +64,19 @@
         <div class="terms-agreement" style="margin-top:20px;padding:15px;border:1px solid #e4e7ec;border-radius:8px;">
             <h3>Terms & Conditions</h3>
             <div style="height:150px;overflow:auto;border:1px solid #ddd;padding:10px;margin-bottom:10px;font-size:13px;">
-                <p><strong>1. Rental Agreement</strong><br>
-                By renting a bicycle from RAB, you agree to these terms and conditions.</p>
-                
-                <p><strong>2. Responsibility</strong><br>
-                The customer is responsible for the bicycle during the rental period.</p>
-                
-                <p><strong>3. Damage & Loss</strong><br>
-                Any damage or loss must be reported immediately. The customer may be liable for repair or replacement costs.</p>
-                
-                <p><strong>4. Return Policy</strong><br>
-                The bicycle must be returned by the agreed time. Late returns will incur additional charges.</p>
-                
-                <p><strong>5. Safety</strong><br>
-                The customer agrees to wear a helmet and follow all traffic rules.</p>
-                
-                <p><strong>6. Data Protection</strong><br>
-                Customer information will be stored securely and used only for rental purposes.</p>
+                <p><strong>1. Rental Agreement</strong><br>By renting a bicycle from RAB, you agree to these terms and conditions.</p>
+                <p><strong>2. Responsibility</strong><br>The customer is responsible for the bicycle during the rental period.</p>
+                <p><strong>3. Damage & Loss</strong><br>Any damage or loss must be reported immediately. The customer may be liable for repair or replacement costs.</p>
+                <p><strong>4. Return Policy</strong><br>The bicycle must be returned by the agreed time. Late returns will incur additional charges.</p>
+                <p><strong>5. Safety</strong><br>The customer agrees to wear a helmet and follow all traffic rules.</p>
+                <p><strong>6. Data Protection</strong><br>Customer information will be stored securely and used only for rental purposes.</p>
             </div>
-            <!-- <label style="display:flex;align-items:center;gap:8px;">
-                <input type="checkbox" name="terms_accepted" required>
-                I agree to the Terms & Conditions
-                <input type="hidden" name="privacy_seen" value="1">
-            </label> -->
 
             <label style="display:flex;align-items:center;gap:8px;">
                 <input type="checkbox" name="terms_accepted" required>
                 I agree to the Terms & Conditions and have read the 
                 <a href="{{ url_for('privacy_policy') }}" target="_blank" style="color:#0d1f46;">Privacy Policy</a>
             </label>
-
         </div>
         
         <!-- Signature Pad -->
@@ -109,23 +93,30 @@
     </form>
 </div>
 
-
-
-
 <div class="card">
+    <!-- ✅ FIXED: Separated Search Form and Privacy Toggle Form (no more nesting) -->
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:15px;">
         <h2 style="margin:0;">Customer List</h2>
 
-        <form method="get" action="{{ url_for('customers') }}" style="display:flex;gap:8px;align-items:center;">
-            <input type="text" name="search" 
-                   placeholder="Search name, phone, ID, email..." 
-                   value="{{ search or '' }}"
-                   style="padding:8px 12px;border:1px solid #ddd;border-radius:8px;min-width:260px;">
-            <button type="submit" class="btn small yellow">🔍 Search</button>
-            {% if search %}
-            <a href="{{ url_for('customers') }}" class="btn small">✖ Clear</a>
-            {% endif %}
-        </form>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <form method="get" action="{{ url_for('customers') }}" style="display:flex;gap:8px;align-items:center;">
+                <input type="text" name="search" 
+                       placeholder="Search name, phone, ID, email..." 
+                       value="{{ search or '' }}"
+                       style="padding:8px 12px;border:1px solid #ddd;border-radius:8px;min-width:260px;">
+                <button type="submit" class="btn small yellow">🔍 Search</button>
+                {% if search %}
+                <a href="{{ url_for('customers') }}" class="btn small">✖ Clear</a>
+                {% endif %}
+            </form>
+
+            <form method="post" action="{{ url_for('toggle_privacy_mode') }}" style="display:inline;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn small" style="background:{% if privacy_mode %}#1e7e34{% else %}#dc3545{% endif %}; color:#fff;">
+                    {{ '🛡️ Privacy ON' if privacy_mode else '⚠️ Privacy OFF' }}
+                </button>
+            </form>
+        </div>
     </div>
 
     {% if search %}
@@ -150,8 +141,24 @@
             <tr>
                 <td><b>{{ c.full_name }}</b></td>
                 <td>{{ c.gender or '—' }}</td>
-                <td>{{ c.phone }}</td>
-                <td>{{ c.id_number or '—' }}</td>
+
+                <!-- ✅ MASKED PHONE WITH REVEAL BUTTON -->
+                <td>
+                    <span class="phone-val" data-id="{{ c.id }}" data-masked="{{ c.phone_display or c.phone }}">
+                        {{ c.phone_display or c.phone }}
+                    </span>
+                    {% if privacy_mode %}
+                    <button type="button" class="btn small reveal-btn" data-id="{{ c.id }}" style="background:#0d1f46;color:#fff;padding:2px 8px;margin-left:5px;">👁</button>
+                    {% endif %}
+                </td>
+
+                <!-- ✅ MASKED ID -->
+                <td>
+                    <span class="id-val" data-id="{{ c.id }}" data-masked="{{ c.id_display or c.id_number }}">
+                        {{ c.id_display or c.id_number }}
+                    </span>
+                </td>
+
                 <td>{{ c.email or '—' }}</td>
                 <td>
                     <span class="badge {% if c.verification_status == 'Verified' %}green{% elif c.verification_status == 'Rejected' %}orange{% else %}blue{% endif %}">
@@ -168,30 +175,23 @@
                         <a class="btn small" href="{{ url_for('verify_customer_page', customer_id=c.id) }}">✅ Verify</a>
                         {% endif %}
 
-                        
                         {% if session.role == 'admin' %}
-
-                        <a class="btn small" href="{{ url_for('reset_customer_password', customer_id=c.id) }}" style="background:#ffd700;color:#111;">🔑 Reset Password</a>
-
+                        <a class="btn small" href="{{ url_for('reset_customer_password', customer_id=c.id) }}" style="background:#ffd700;color:#111;">🔑 Reset</a>
                         <form method="post" action="{{ url_for('delete_customer', customer_id=c.id) }}" 
                             style="display:inline;" 
                             onsubmit="return confirm('Are you sure you want to delete customer {{ c.full_name }}? This action cannot be undone.');">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                            <button class="btn small" style="background:#dc3545;color:#fff;">🗑️ Delete</button>
+                            <button class="btn small" style="background:#dc3545;color:#fff;">🗑️</button>
                         </form>
-                        
                         {% endif %}
 
-                        <div style="display:flex;gap:5px;flex-wrap:wrap;">
-                            <!-- ✅ ADD THIS VIEW BUTTON -->
                         <a class="btn small" href="{{ url_for('view_customer', customer_id=c.id) }}" style="background:#17a2b8;color:#fff;">👁️ View</a>                  
-
                     </div>
                 </td>
             </tr>
             {% else %}
             <tr>
-                <td colspan="8">
+                <td colspan="8" style="text-align:center; padding: 20px; color: #667085;">
                     {% if search %}
                         No customers match "<b>{{ search }}</b>".
                     {% else %}
@@ -204,20 +204,12 @@
     </div>
 </div>
 
-
-
-
-
-
-
-
+<!-- ✅ Signature Pad JavaScript -->
 <script>
-// Signature Pad JavaScript
 var canvas = document.getElementById('signatureCanvas');
 var ctx = canvas.getContext('2d');
 var drawing = false;
 
-// Set canvas size
 canvas.width = canvas.offsetWidth;
 canvas.height = 150;
 
@@ -226,7 +218,6 @@ ctx.lineWidth = 2;
 ctx.lineCap = 'round';
 ctx.lineJoin = 'round';
 
-// Mouse events
 canvas.addEventListener('mousedown', function(e) {
     drawing = true;
     var rect = canvas.getBoundingClientRect();
@@ -247,7 +238,6 @@ canvas.addEventListener('mouseup', function() {
     document.getElementById('signatureData').value = canvas.toDataURL();
 });
 
-// Touch events for mobile
 canvas.addEventListener('touchstart', function(e) {
     e.preventDefault();
     drawing = true;
@@ -277,6 +267,52 @@ function clearSignature() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     document.getElementById('signatureData').value = '';
 }
+</script>
+
+<!-- ✅ Audited Reveal Button JavaScript -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content;
+    
+    document.querySelectorAll('.reveal-btn').forEach(btn => {
+        btn.addEventListener('click', async () => {
+            const id = btn.dataset.id;
+            const res = await fetch(`/customers/${id}/reveal`, {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': csrf,
+                    'Content-Type': 'application/json'
+                },
+            });
+            const data = await res.json();
+            
+            if (data.phone) {
+                const phoneEl = document.querySelector(`.phone-val[data-id="${id}"]`);
+                const idEl    = document.querySelector(`.id-val[data-id="${id}"]`);
+                
+                // Save masked version if not already saved
+                if (!phoneEl.dataset.masked) phoneEl.dataset.masked = phoneEl.textContent;
+                if (!idEl.dataset.masked) idEl.dataset.masked = idEl.textContent;
+
+                // Show real data
+                phoneEl.textContent = data.phone;
+                idEl.textContent = data.id_number;
+                
+                // Disable button and change icon
+                btn.disabled = true;
+                btn.textContent = "🔒";
+                
+                // Auto re-hide after 20 seconds
+                setTimeout(() => {
+                    phoneEl.textContent = phoneEl.dataset.masked;
+                    idEl.textContent = idEl.dataset.masked;
+                    btn.disabled = false;
+                    btn.textContent = "👁";
+                }, 20000);
+            }
+        });
+    });
+});
 </script>
 
 {% endblock %}

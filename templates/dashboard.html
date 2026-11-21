@@ -18,7 +18,17 @@
 {% endif %}
 
 
-
+{% if pending_online_regs > 0 %}
+<div class="card" style="background:#fff8e1; border-left:5px solid #ffd700; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+            <h3 style="color:#a66300; margin:0;">📝 {{ pending_online_regs }} Pending Online Registration(s)</h3>
+            <p style="color:#667085; margin-top:5px;">New customers have registered online and are waiting for approval.</p>
+        </div>
+        <a href="{{ url_for('pending_registrations') }}" class="btn yellow">Review Now</a>
+    </div>
+</div>
+{% endif %}
 
 <!-- ✅ STATION STATUS BOARD — uses the app's native .card + .badge look -->
 <div class="card" style="padding:16px 18px; margin-bottom:16px;">
@@ -50,8 +60,77 @@
     </div>
 </div>
 
+<!-- ✅ ONLINE USERS BOARD -->
+<div class="card" style="background:#f8f9fa; border-left: 4px solid #16834b;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <h2 style="margin:0; font-size:1.2rem;">🟢 Who is Online Right Now</h2>
+        <span class="badge green">{{ online_users|length }} Active</span>
+    </div>
+    
+    {% if online_users %}
+    <div style="display:flex; flex-wrap:wrap; gap:10px;">
+        {% for u in online_users %}
+        <div style="background:white; padding:8px 12px; border-radius:8px; border:1px solid #e4e7ec; display:flex; align-items:center; gap:8px;">
+            <span style="font-size:18px;">
+                {% if u.role == 'admin' %}👑
+                {% elif u.role == 'manager' %}💼
+                {% elif u.role == 'staff' %}🔧
+                {% else %}🚲{% endif %}
+            </span>
+            <div>
+                <div style="font-weight:bold; font-size:14px; color:#0d1f46;">{{ u.full_name }}</div>
+                <div style="font-size:11px; color:#667085; text-transform:capitalize;">{{ u.role }}</div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:#667085; font-size:14px; margin:0;">No one is currently active on the system.</p>
+    {% endif %}
+</div>
 
 
+<!-- ✅ GENERAL LIVE VOICE BROADCAST (Dashboard) -->
+<div class="card" style="background:#f8f9fa; border-left: 4px solid #0d1f46; margin-bottom:20px;">
+    <h3>🎙️ Record a General Live Update</h3>
+    <p style="color:#667085; font-size:13px;">Leave a quick voice note for all staff — it appears here and on Start Rental instantly.</p>
+
+    <form method="post" action="{{ url_for('upload_general_voice_note') }}" enctype="multipart/form-data" class="voice-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="button" class="record-btn" style="background:#dc3545; color:white; border:none; padding:10px 16px; border-radius:6px; cursor:pointer; font-weight:bold;">⏺️ Hold to Record</button>
+        <span class="record-status" style="margin-left:10px; font-size:13px; color:#667085;"></span>
+        <input type="file" name="audio_data" class="audio-input" style="display:none;">
+    </form>
+
+    {% if recent_voice_notes %}
+    <div style="margin-top: 15px; border-top: 1px solid #e4e7ec; padding-top: 15px;">
+        <h4 style="font-size: 14px; margin-bottom: 10px;">Recent Updates:</h4>
+       
+        {% for v in recent_voice_notes %}
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px; background:white; padding:10px; border-radius:8px; border:1px solid #e4e7ec;">
+            <div style="flex:1;">
+                <div style="font-size:12px; font-weight:bold; color:#0d1f46;">{{ v.full_name }} <span style="color:#667085; font-weight:normal;">({{ v.created_at }})</span></div>
+                {% if v.file_path.startswith('http') %}
+                    <audio controls src="{{ v.file_path }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+                {% else %}
+                    <audio controls src="{{ url_for('static', filename=v.file_path) }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+                {% endif %}
+            </div>
+            {% if session.role == 'admin' %}
+            <form method="post" action="{{ url_for('delete_voice_note', voice_id=v.id) }}" onsubmit="return confirm('Delete this voice note?');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input type="hidden" name="next" value="{{ request.url }}">
+                <button class="btn small" style="background:#dc3545; color:#fff;">🗑️</button>
+            </form>
+            {% endif %}
+        </div>
+        {% endfor %}
+
+
+
+    </div>
+    {% endif %}
+</div>
 
 <div class="grid">
     <div class="metric">
