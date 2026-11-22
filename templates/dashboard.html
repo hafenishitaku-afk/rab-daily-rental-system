@@ -237,31 +237,48 @@
         <table>
             <thead>
                 <tr>
-                    <th>ID</th>
                     <th>Customer</th>
                     <th>Bike</th>
-                    <th>Pickup</th>
-                    <th>Drop-off</th>
-                    <th>Started</th>
-                    <th>Duration</th>
+                    <th>Pickup Station</th>
                     <th>Deposit</th>
-                    <th>Actions</th>
+                    <th>Expected Drop-off</th>
+                    <th>Start Time</th>
+                    <th>Duration</th>
+                    <th>Action</th>
                 </tr>
             </thead>
             <!-- ✅ THIS IS THE MAGIC WRAPPER -->
             <tbody data-live-feed="rentals">
-                {% for r in rentals %}
+                {% for rental in rentals %}
                 <tr>
-                    <td><b>{{ r.id }}</b></td>
-                    <td>{{ r.full_name }}</td>
-                    <td>{{ r.bike_code }}</td>
-                    <td>{{ r.pickup_station or '—' }}</td>
-                    <td>{{ r.dropoff_station or '—' }}</td>
-                    <td>{{ r.start_time }}</td>
-                    <td><b style="color:#0d1f46;">{{ r.duration }}</b></td>
-                    <td>N$ {{ "%.2f"|format(r.deposit_paid or 0) }}</td>
+                    <td><b>{{ rental.full_name }}</b></td>
+                    <td>{{ rental.bike_code }}</td>
                     <td>
-                        <a class="btn small" href="{{ url_for('end_rental', rental_id=r.id) }}" style="background:#dc3545; color:#fff;">End Rental</a>
+                        {% if rental.pickup_station %}
+                            <span class="badge blue">{{ rental.pickup_station }}</span>
+                        {% else %}
+                            <span style="color:#667085;">—</span>
+                        {% endif %}
+                    </td>
+                    <td><b>N$ {{ "%.2f"|format(rental.deposit_paid or 0) }}</b></td>
+                    <td>
+                        {% if rental.dropoff_station %}
+                            <span class="badge orange">{{ rental.dropoff_station }}</span>
+                        {% else %}
+                            <span style="color:#667085;">—</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ rental.start_time }}</td>
+                    <td>{{ rental.duration }}</td>
+                    <td>
+                        <a class="btn small" href="{{ url_for('end_rental', rental_id=rental.id) }}">End Rental</a>
+                        <a class="btn small" href="{{ url_for('rental_agreement_pdf', rental_id=rental.id) }}">📄 Agreement</a>
+                        {% if session.role == 'admin' or session.role == 'manager' %}
+                        <button class="btn small" style="background:#dc3545;color:#fff;"
+                                onclick="openCancelModal({{ rental.id }}, '{{ rental.full_name|e }}', '{{ rental.bike_code|e }}')">
+                            ✖ Cancel
+                        </button>
+                        {% endif %}
                     </td>
                 </tr>
                 {% endfor %}
