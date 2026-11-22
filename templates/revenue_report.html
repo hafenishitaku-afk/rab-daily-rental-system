@@ -169,7 +169,7 @@
                     <td><b>{{ row.date or row.month or row.week }}</b></td>
                     <td>{{ row.transactions }}</td>
                     <td><b>N$ {{ "%.2f"|format(row.total) }}</b></td>
-                    <td>{{ row.unique_customers or '—' }}</td>
+                    <td>{{ row.customers or '—' }}</td>
                 </tr>
                 {% endfor %}
             {% else %}

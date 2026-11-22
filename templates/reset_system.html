@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<h1 style="color:#dc3545;">⚠️ System Reset</h1>
+<p class="sub">This will permanently delete all business data. Your Admin account and Stations will be kept.</p>
+
+{% if needs_reauth %}
+<div class="card" style="max-width:500px; margin:20px auto; background:#fff8e1; border-left:5px solid #ffd700;">
+    <h2>🔐 Step 1: Re-Authenticate</h2>
+    <p style="color:#667085;">For security, please confirm your identity before proceeding.</p>
+    
+    <form method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        
+        <label>
+            Your Admin Password
+            <input type="password" name="password" required autofocus>
+        </label>
+        
+        <label style="margin-top:12px;">
+            2FA Code (if enabled)
+            <input type="text" name="totp_code" placeholder="6-digit code" maxlength="6" pattern="[0-9]{6}">
+        </label>
+        
+        <button class="btn yellow" type="submit" style="margin-top:16px; width:100%;">🔓 Verify Identity</button>
+    </form>
+</div>
+
+{% else %}
+
+<div class="card" style="background:#fdeceb; border-left:5px solid #dc3545; margin-bottom:20px;">
+    <h2 style="color:#dc3545; margin-top:0;">🚨 Step 2: Confirm Data Destruction</h2>
+    <p>The following will be <b>permanently deleted</b>:</p>
+    <ul>
+        <li>All Customers and their User Accounts</li>
+        <li>All Rentals, Payments, and Invoices</li>
+        <li>All Bicycles and Maintenance Records</li>
+        <li>All Announcements, Voice Notes, and Audit Logs</li>
+    </ul>
+    <p><b>What will be KEPT:</b> Your Admin/Staff accounts, your Stations, and your Page Access settings.</p>
+    
+    <form method="post" onsubmit="return confirm('ARE YOU ABSOLUTELY SURE? This cannot be undone!');">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        
+        <label style="display:block; margin-bottom:15px;">
+            Type <b>RESET</b> in the box below to enable the button:
+            <input type="text" id="confirmInput" name="confirm_text" required 
+                   style="width:100%; padding:10px; font-size:16px; border:2px solid #dc3545; border-radius:6px; margin-top:5px;"
+                   placeholder="Type RESET here...">
+        </label>
+        
+        <button id="executeBtn" type="submit" disabled 
+                style="background:#dc3545; color:#fff; padding:12px 24px; border:none; border-radius:6px; font-weight:bold; font-size:16px; cursor:not-allowed; opacity:0.5;">
+            🗑️ EXECUTE FULL RESET
+        </button>
+    </form>
+</div>
+
+{% endif %}
+
+<div class="actions">
+    <a href="{{ url_for('dashboard') }}" class="btn">← Cancel and go back</a>
+</div>
+
+<script>
+    const input = document.getElementById('confirmInput');
+    const btn = document.getElementById('executeBtn');
+    
+    if(input && btn) {
+        input.addEventListener('input', function() {
+            if (this.value.toUpperCase() === 'RESET') {
+                btn.disabled = false;
+                btn.style.cursor = 'pointer';
+                btn.style.opacity = '1';
+            } else {
+                btn.disabled = true;
+                btn.style.cursor = 'not-allowed';
+                btn.style.opacity = '0.5';
+            }
+        });
+    }
+</script>
+
+{% endblock %}

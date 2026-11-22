@@ -8,8 +8,10 @@
 <!-- Overview Cards -->
 <div class="grid">
     <div class="metric" style="border-left:4px solid #16834b;">
-        <div class="label">💰 Total Revenue</div>
-        <div class="value">N$ {{ "%.2f"|format(total_revenue) }}</div>
+
+<div class="value">N$ {{ "%.2f"|format(total_revenue) }}</div>
+<div style="font-size:12px;color:#667085;">Collected N$ {{ "%.2f"|format(total_collected) }} · Refunded N$ {{ "%.2f"|format(total_refunded) }}</div>
+
     </div>
     <div class="metric" style="border-left:4px solid #0d1f46;">
         <div class="label">🚲 Total Rentals</div>
@@ -111,6 +113,106 @@
     </div>
 </div>
 
+<!-- ✅ STAFF LEADERBOARD & REWARDS -->
+<div class="card" style="border-top: 4px solid #ffd700;">
+    <h2>🏆 Staff Performance & Rewards</h2>
+    <p class="sub">Top performers based on rentals processed. Grant rewards to motivate your team.</p>
+    
+    <div class="scroll" style="max-height:400px;">
+        <table>
+            <tr>
+                <th>Rank</th>
+                <th>Staff Member</th>
+                <th>Role</th>
+                <th>Rentals Processed</th>
+                <th>Revenue Generated</th>
+                <th>Items Sold</th>
+                <th>Actions</th>
+            </tr>
+            {% for s in staff_performance %}
+            <tr>
+                <td>
+                    {% if loop.index == 1 %}🥇
+                    {% elif loop.index == 2 %}🥈
+                    {% elif loop.index == 3 %}🥉
+                    {% else %}{{ loop.index }}{% endif %}
+                </td>
+                <td><b>{{ s.full_name or 'Unknown' }}</b></td>
+                <td><span class="badge {% if s.role == 'admin' %}green{% elif s.role == 'manager' %}blue{% else %}orange{% endif %}">{{ s.role }}</span></td>
+                <td>{{ s.rentals_count }}</td>
+                <td style="color:#16834b; font-weight:bold;">N$ {{ "%.2f"|format(s.revenue_generated) }}</td>
+                <td>{{ s.items_sold }}</td>
+                <td>
+                    {% if s.id != session.user_id %} <!-- Don't reward yourself -->
+                    <button class="btn small yellow" onclick="openRewardModal({{ s.id }}, '{{ s.full_name }}')">🎁 Reward</button>
+                    {% else %}
+                    <span style="color:#667085; font-size:12px;">—</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="7" style="text-align:center;">No staff activity recorded yet.</td></tr>
+            {% endfor %}
+        </table>
+    </div>
+</div>
+
+<!-- ✅ REWARD MODAL (Hidden by default) -->
+<div id="rewardModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; justify-content:center; align-items:center;">
+    <div class="card" style="width:90%; max-width:400px; margin:auto;">
+        <h3 style="margin-top:0;">🎁 Grant Reward</h3>
+        <p>Granting reward to: <b id="modalStaffName"></b></p>
+        
+        <form method="post" action="{{ url_for('grant_staff_reward') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" id="modalStaffId" name="staff_id">
+            
+            <label style="display:block; margin-bottom:10px;">
+                Reward Type
+                <select name="reward_type" required style="width:100%; padding:8px;">
+                    <option value="Cash Bonus">💰 Cash Bonus</option>
+                    <option value="Gift Voucher">🎁 Gift Voucher</option>
+                    <option value="Certificate">📜 Certificate of Excellence</option>
+                    <option value="Extra Day Off">🏖️ Extra Day Off</option>
+                </select>
+            </label>
+            
+            <label style="display:block; margin-bottom:10px;">
+                Amount (N$) - Optional
+                <input type="number" step="0.01" name="amount" value="0" style="width:100%; padding:8px;">
+            </label>
+            
+            <label style="display:block; margin-bottom:15px;">
+                Reason for Reward
+                <textarea name="reason" required placeholder="e.g. Highest rentals this month, excellent customer service..." style="width:100%; padding:8px; height:80px;"></textarea>
+            </label>
+            
+            <div style="display:flex; gap:10px; justify-content:flex-end;">
+                <button type="button" class="btn" onclick="closeRewardModal()">Cancel</button>
+                <button type="submit" class="btn yellow">🏆 Confirm Reward</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openRewardModal(id, name) {
+    document.getElementById('modalStaffId').value = id;
+    document.getElementById('modalStaffName').innerText = name;
+    document.getElementById('rewardModal').style.display = 'flex';
+}
+function closeRewardModal() {
+    document.getElementById('rewardModal').style.display = 'none';
+}
+// Close modal if clicking outside the box
+window.onclick = function(event) {
+    const modal = document.getElementById('rewardModal');
+    if (event.target == modal) {
+        closeRewardModal();
+    }
+}
+</script>
+
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
     <!-- Top Customers -->
     <div class="card">
@@ -140,26 +242,38 @@
     <!-- Payment Methods -->
     <div class="card">
         <h2>💳 Payment Methods</h2>
+    <!-- Payment Methods -->
+    <div class="card">
+        <h2>💳 Payment Methods</h2>
         <div class="scroll" style="max-height:300px;">
             <table>
                 <tr>
                     <th>Method</th>
                     <th>Count</th>
-                    <th>Total</th>
-                    <th>%</th>
+                    <th>Collected</th>
+                    <th>Refunded</th>
+                    <th>Net</th>
+                    <th>% of Collected</th>
                 </tr>
                 {% for p in payment_methods %}
                 <tr>
                     <td><b>{{ p.payment_method or 'Unknown' }}</b></td>
                     <td>{{ p.count }}</td>
-                    <td>N$ {{ "%.2f"|format(p.total) }}</td>
-                    <td>{{ "%.1f"|format((p.total / total_revenue * 100) if total_revenue > 0 else 0) }}%</td>
+                    <td style="color:#16834b;">N$ {{ "%.2f"|format(p.collected) }}</td>
+                    <td style="color:#dc3545;">N$ {{ "%.2f"|format(p.refunded) }}</td>
+                    <td style="color:{% if p.net < 0 %}#dc3545{% else %}#16834b{% endif %};">N$ {{ "%.2f"|format(p.net) }}</td>
+                    <td>{{ "%.1f"|format((p.collected / total_collected * 100) if total_collected > 0 else 0) }}%</td>
                 </tr>
                 {% else %}
-                <tr><td colspan="4">No data available.</td></tr>
+                <tr><td colspan="6">No payment records yet.</td></tr>
                 {% endfor %}
             </table>
         </div>
+        <p style="color:#667085;font-size:12px;margin-top:8px;">
+            Total collected: <b>N$ {{ "%.2f"|format(total_collected) }}</b> · 
+            Total refunded: <b>N$ {{ "%.2f"|format(total_refunded) }}</b>
+        </p>
+    </div>
     </div>
 </div>
 

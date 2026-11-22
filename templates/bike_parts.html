@@ -1,7 +1,42 @@
 {% extends "base.html" %}
+
 {% block content %}
-<h1>🚲 Bicycle Parts Training</h1>
-<p class="sub">Learn the names of all bicycle parts to report damage accurately.</p>
+
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:20px;">
+    <div>
+        <h1 style="margin:0;">🚲 Bicycle Parts Training</h1>
+        <p class="sub" style="margin:5px 0 0 0;">Learn the names of all bicycle parts to report damage accurately.</p>
+    </div>
+    <button id="startQuizBtn" class="btn yellow" style="font-size:16px; padding:10px 20px;">🎮 Play Parts Quiz</button>
+</div>
+
+<!-- ✅ QUIZ GAME AREA (Hidden by default) -->
+<div id="quizArea" class="card" style="display:none; background:#f8f9fa; border-left:5px solid #6f42c1; margin-bottom:30px;">
+    <div id="quizHeader" style="display:flex; justify-content:space-between; margin-bottom:15px; font-weight:bold; font-size:18px;">
+        <span>Score: <span id="scoreDisplay" style="color:#16834b;">0</span></span>
+        <span>Question: <span id="qNumDisplay">1</span>/10</span>
+        <span>⏱️ <span id="timerDisplay" style="color:#dc3545;">10</span>s</span>
+    </div>
+    
+    <div style="text-align:center; margin-bottom:20px;">
+        <img id="quizImage" src="" alt="Part" style="max-height:250px; border-radius:8px; border:2px solid #e4e7ec; background:white; padding:10px;">
+    </div>
+
+    <div id="quizOptions" style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+        <!-- Buttons injected by JS -->
+    </div>
+    
+    <div id="quizFeedback" style="text-align:center; margin-top:15px; font-weight:bold; font-size:16px; min-height:24px;"></div>
+</div>
+
+<!-- ✅ FINAL SCORE SCREEN (Hidden by default) -->
+<div id="quizResult" class="card" style="display:none; text-align:center; background:#e7f6ec; border-left:5px solid #16834b; margin-bottom:30px;">
+    <h2 id="resultTitle">Quiz Complete!</h2>
+    <p style="font-size:24px; margin:20px 0;">You scored <b id="finalScore" style="color:#6f42c1;">0</b> out of 10</p>
+    <p id="resultMessage" style="color:#667085; margin-bottom:20px;"></p>
+    <button onclick="startQuiz()" class="btn yellow">🔄 Play Again</button>
+    <button onclick="closeQuiz()" class="btn">Close</button>
+</div>
 
 {% if session.role in ['admin', 'manager'] %}
 <div class="card">
@@ -18,19 +53,19 @@
 </div>
 {% endif %}
 
-<div class="grid">
+<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap:20px;">
     {% for p in parts %}
     <div class="card" style="text-align:center; position:relative;">
         <img src="{{ url_for('static', filename=p.image_path) }}" 
-            alt="{{ p.part_name }}" 
-            style="max-width:100%; height:150px; object-fit:cover; border-radius:8px;">
+             alt="{{ p.part_name }}" 
+             style="max-width:100%; height:150px; object-fit:cover; border-radius:8px;">
         <h3 style="margin-top:10px; color:#0d1f46;">{{ p.part_name }}</h3>
         <p style="color:#667085; font-size:13px;">{{ p.description }}</p>
 
         {% if session.role in ['admin', 'manager'] %}
         <form method="post" action="{{ url_for('delete_bike_part', part_id=p.id) }}" 
-            style="display:inline;" 
-            onsubmit="return confirm('Delete part {{ p.part_name }}? This removes the image too.');">
+              style="display:inline;" 
+              onsubmit="return confirm('Delete part {{ p.part_name }}? This removes the image too.');">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button class="btn small" style="background:#dc3545; color:#fff; margin-top:6px;">🗑️ Delete</button>
         </form>
@@ -38,4 +73,164 @@
     </div>
     {% endfor %}
 </div>
+
+<script>
+// 1. Build the game data from the database parts passed by Flask
+const allParts = [
+    {% for p in parts %}
+    { id: {{ p.id }}, name: "{{ p.part_name|replace('"', '\\"') }}", src: "{{ url_for('static', filename=p.image_path) }}" },
+    {% endfor %}
+];
+
+let currentQuestion = 0;
+let score = 0;
+let timer;
+let timeLeft = 10;
+let isAnswering = false;
+const totalQuestions = 10; // Play 10 rounds
+
+// UI Elements
+const quizArea = document.getElementById('quizArea');
+const quizResult = document.getElementById('quizResult');
+const startBtn = document.getElementById('startQuizBtn');
+
+startBtn.addEventListener('click', startQuiz);
+
+function startQuiz() {
+    if (allParts.length < 2) {
+        alert("Not enough parts in the database to play! Add at least 2 parts.");
+        return;
+    }
+    
+    quizArea.style.display = 'block';
+    quizResult.style.display = 'none';
+    startBtn.style.display = 'none';
+    
+    score = 0;
+    currentQuestion = 0;
+    document.getElementById('scoreDisplay').innerText = score;
+    
+    nextQuestion();
+}
+
+function closeQuiz() {
+    quizArea.style.display = 'none';
+    quizResult.style.display = 'none';
+    startBtn.style.display = 'inline-block';
+    clearInterval(timer);
+}
+
+function nextQuestion() {
+    if (currentQuestion >= totalQuestions || currentQuestion >= allParts.length) {
+        endGame();
+        return;
+    }
+    
+    isAnswering = false;
+    document.getElementById('qNumDisplay').innerText = currentQuestion + 1;
+    document.getElementById('quizFeedback').innerText = "";
+    
+    // Pick a random correct part
+    const correctPart = allParts[Math.floor(Math.random() * allParts.length)];
+    document.getElementById('quizImage').src = correctPart.src;
+    
+    // Pick 3 random distractors
+    let options = [correctPart];
+    let distractors = allParts.filter(p => p.id !== correctPart.id);
+    
+    // Shuffle distractors and take up to 3
+    distractors.sort(() => 0.5 - Math.random());
+    for (let i = 0; i < Math.min(3, distractors.length); i++) {
+        options.push(distractors[i]);
+    }
+    
+    // Shuffle options so the correct answer isn't always first
+    options.sort(() => 0.5 - Math.random());
+    
+    // Render buttons
+    const optionsDiv = document.getElementById('quizOptions');
+    optionsDiv.innerHTML = '';
+    options.forEach(opt => {
+        const btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.style.cssText = 'padding:15px; font-size:16px; background:white; color:#0d1f46; border:2px solid #e4e7ec;';
+        btn.innerText = opt.name;
+        btn.onclick = () => checkAnswer(opt, correctPart, btn);
+        optionsDiv.appendChild(btn);
+    });
+    
+    // Start Timer
+    timeLeft = 10;
+    document.getElementById('timerDisplay').innerText = timeLeft;
+    clearInterval(timer);
+    timer = setInterval(() => {
+        timeLeft--;
+        document.getElementById('timerDisplay').innerText = timeLeft;
+        if (timeLeft <= 0) {
+            clearInterval(timer);
+            handleTimeout(correctPart);
+        }
+    }, 1000);
+}
+
+function checkAnswer(selected, correct, btnElement) {
+    if (isAnswering) return;
+    isAnswering = true;
+    clearInterval(timer);
+    
+    const feedback = document.getElementById('quizFeedback');
+    
+    if (selected.id === correct.id) {
+        score++;
+        document.getElementById('scoreDisplay').innerText = score;
+        btnElement.style.background = '#16834b'; // Green
+        btnElement.style.color = 'white';
+        feedback.innerText = "✅ Correct!";
+        feedback.style.color = '#16834b';
+    } else {
+        btnElement.style.background = '#dc3545'; // Red
+        btnElement.style.color = 'white';
+        feedback.innerText = `❌ Wrong! It was ${correct.name}`;
+        feedback.style.color = '#dc3545';
+    }
+    
+    currentQuestion++;
+    setTimeout(nextQuestion, 1500); // Wait 1.5s then next question
+}
+
+function handleTimeout(correct) {
+    if (isAnswering) return;
+    isAnswering = true;
+    const feedback = document.getElementById('quizFeedback');
+    feedback.innerText = `⏰ Time's up! It was ${correct.name}`;
+    feedback.style.color = '#dc3545';
+    currentQuestion++;
+    setTimeout(nextQuestion, 2000);
+}
+
+function endGame() {
+    quizArea.style.display = 'none';
+    quizResult.style.display = 'block';
+    document.getElementById('finalScore').innerText = score;
+    startBtn.style.display = 'inline-block';
+    
+    const msg = document.getElementById('resultMessage');
+    const title = document.getElementById('resultTitle');
+    
+    if (score === 10) {
+        title.innerText = "🏆 Master Mechanic!";
+        msg.innerText = "Perfect score! You know every part by heart.";
+    } else if (score >= 7) {
+        title.innerText = "🌟 Great Job!";
+        msg.innerText = "You know your stuff. Ready to spot damage!";
+    } else if (score >= 4) {
+        title.innerText = "👍 Good Effort";
+        msg.innerText = "Keep studying the parts list and try again!";
+    } else {
+        title.innerText = "📚 Back to School";
+        msg.innerText = "Review the images above and give it another shot.";
+    }
+}
+</script>
+
 {% endblock %}

@@ -125,12 +125,53 @@
             {% endif %}
         </div>
         {% endfor %}
-
-
-
     </div>
     {% endif %}
 </div>
+
+
+<!-- ✅ CUSTOMER SUPPORT FEED -->
+<div class="card" style="background:#f8f9fa; border-left:4px solid #17a2b8; margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+        <h3 style="margin:0;">🎧 Customer Support</h3>
+        {% if open_support > 0 %}
+        <span class="badge" style="background:#dc3545;color:#fff;">{{ open_support }} open</span>
+        {% endif %}
+    </div>
+        
+    {% for s in recent_support %}
+    <div style="display:flex; align-items:center; gap:10px; margin-top:10px; background:white; padding:10px; border-radius:8px; border:1px solid #e4e7ec;">
+        <div style="flex:1;">
+            <div style="font-size:12px; font-weight:bold; color:#0d1f46;">
+                {% if s.sender_role == 'customer' %}
+                    🧑 {{ s.cust_name }} <span class="badge" style="background:#ffe500;color:#111;">Customer</span>
+                {% else %}
+                    👷 {{ s.staff_name }} <span class="badge blue">Staff reply</span>
+                {% endif %}
+                <span style="color:#667085; font-weight:normal;">({{ s.created_at }})</span>
+            </div>
+            {% if s.file_path.startswith('http') %}
+                <audio controls src="{{ s.file_path }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+            {% else %}
+                <audio controls src="{{ url_for('static', filename=s.file_path) }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+            {% endif %}
+        </div>
+        {% if session.role == 'admin' %}
+        <form method="post" action="{{ url_for('delete_support_message', msg_id=s.id) }}"
+            onsubmit="return confirm('Delete this support message? This removes the audio too.');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <input type="hidden" name="next" value="{{ request.url }}">
+            <button class="btn small" style="background:#dc3545; color:#fff;">🗑️</button>
+        </form>
+        {% endif %}
+    </div>
+    {% else %}
+        <p style="color:#667085; font-size:13px; margin-top:8px;">No support messages yet.</p>
+    {% endfor %}
+
+    <a href="{{ url_for('support') }}" class="btn yellow" style="margin-top:12px; width:100%;">💬 Open Support Threads</a>
+</div>
+
 
 <div class="grid">
     <div class="metric">

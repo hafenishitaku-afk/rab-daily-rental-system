@@ -228,6 +228,24 @@ def has_page_permission(page_key, user_id=None):
     return bool(row and row.get("can_view", False))
 
 
+def save_voice_file(audio_data, prefix):
+    """Upload audio to Cloudinary, fallback to local. Returns the DB path."""
+    cloud_name = os.environ.get("CLOUDINARY_CLOUD_NAME")
+    if cloud_name:
+        try:
+            import cloudinary.uploader
+            res = cloudinary.uploader.upload(audio_data, resource_type="video")
+            return res["secure_url"]
+        except Exception as e:
+            print(f"❌ Cloudinary voice failed: {e}")
+    import uuid
+    filename = f"{prefix}_{uuid.uuid4().hex}.webm"
+    folder = os.path.join(BASE, 'static', 'audio')
+    os.makedirs(folder, exist_ok=True)
+    audio_data.save(os.path.join(folder, filename))
+    return f"audio/{filename}"
+
+
 def page_required(page_key):
     """Decorator that blocks access to sensitive pages without permission."""
     def decorator(f):
@@ -2039,7 +2057,35 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-       
+
+
+        if is_postgres:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS customer_support (
+                    id SERIAL PRIMARY KEY,
+                    customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
+                    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                    sender_role TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    resolved BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+        else:
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS customer_support (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    customer_id INTEGER NOT NULL,
+                    user_id INTEGER,
+                    sender_role TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    resolved INTEGER DEFAULT 0,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+
+
     # =============================================
     # ADD DEFAULT RATES (Works for both)
     # =============================================
@@ -2707,95 +2753,6 @@ def staff_verify():
 
 
 
-
-# @app.route("/login", methods=["GET", "POST"])
-# @limiter.limit("50 per minute;200 per hour")
-# def login():
-#     # 1. If already logged in, redirect
-#     if session.get("user_id"):
-#         return redirect(url_for("home"))
-
-#     # 2. Handle the POST request (Form Submission)
-#     if request.method == "POST":
-#         conn = db()
-#         c = conn.cursor()
-        
-#         verified_username = session.get("verified_staff_username")
-#         login_username = request.form.get("username", "").strip()
-#         password = request.form.get("password", "")
-
-#         # Security check: ensure they are logging in with the verified username
-#         if verified_username and login_username != verified_username:
-#             flash("Security Error: You must log in with the username you verified.", "danger")
-#             return redirect(url_for("home"))
-
-#         # Fetch the user
-#         user = execute_query(c, "SELECT * FROM users WHERE username = ?", (login_username,)).fetchone()
-        
-#         # Check if user exists and verify password
-#         if user and check_password_hash(user["password_hash"], password):
-            
-#             # ✅ Check lockout status
-#             lockout = get_lockout_status(c, user["id"])
-#             if lockout.get("is_locked"):
-#                 flash(f"Account locked. Try again in {lockout.get('minutes_left')} minutes.", "danger")
-#                 conn.close()
-#                 return redirect(url_for("login"))
-
-#             # ✅ 2FA CHECK GOES HERE (After successful password verification!)
-#             if user.get("twofa_required") == 1 and user.get("twofa_enabled") == 0:
-#                 session["user_id"] = user["id"] # Temporarily store ID for setup
-#                 conn.close()
-#                 return redirect(url_for("twofa_setup"))
-            
-#             if user.get("twofa_enabled") == 1:
-#                 session["twofa_user_id"] = user["id"] # Temporarily store ID for 2FA prompt
-#                 conn.close()
-#                 return redirect(url_for("twofa_verify"))
-
-#             # ✅ Successful Login (No 2FA required)
-#             session["user_id"] = user["id"]
-#             session["username"] = user["username"]
-#             session["role"] = user["role"]
-#             session["full_name"] = user.get("full_name") # ✅ Added this
-#             session["station_id"] = user.get("branch_id") # ✅ Added this
-            
-#             # Clear lockout on successful login
-#             execute_query(c, "DELETE FROM login_attempts WHERE user_id = ?", (user["id"],))
-#             conn.commit()
-            
-#             # ✅ AUDIT LOG (Added before closing connection)
-#             log_audit(
-#                 action="login_success",
-#                 entity_type="user",
-#                 entity_id=user["id"],
-#                 details=f"User {user['username']} logged in successfully",
-#                 user_id=user["id"],
-#                 username=user["username"],
-#                 user_role=user["role"]
-#             )
-
-#             conn.close()
-#             flash(f"Hello 👋 once again! Welcome back 🤝, {user['full_name'] or user['username']}❗", "success")
-
-#             return redirect(url_for("dashboard")) # ✅ Redirect to dashboard, not home
-            
-#         else:
-#             # Failed login logic
-#             log_audit(
-#                 action="login_failed",
-#                 entity_type="user",
-#                 details=f"Failed login attempt for username: {login_username}",
-#                 username=login_username
-#             )
-#             flash("Invalid username or password.", "danger")
-#             conn.close()
-#             return redirect(url_for("login"))
-
-#     # 3. Handle the GET request (Show the login form)
-#     return render_template("login.html")
-
-
 @app.route("/login", methods=["GET", "POST"])
 @limiter.limit("50 per minute;200 per hour")
 def login():
@@ -3056,6 +3013,111 @@ def customer_login():
 
     # GET
     return render_template("customer_login.html", title="Customer Login")
+
+
+@app.route("/admin/reset-system", methods=["GET", "POST"])
+@login_required  # ✅ Changed from @admin_required
+def reset_system():
+    """Built-in system reset. Wipes business data but keeps Admin/Staff accounts and Stations."""
+    from datetime import datetime, timedelta
+    
+    # ✅ Manual Admin Check (prevents crash if @admin_required isn't defined)
+    if session.get("role") != "admin":
+        flash("Access denied. Admins only.", "danger")
+        return redirect(url_for("dashboard"))
+
+    # Check if user has recently re-authenticated (within 15 minutes for safety)
+    reauth_time = session.get("reauthenticated_at")
+    needs_reauth = True
+    
+    if reauth_time:
+        try:
+            reauth_dt = datetime.fromisoformat(reauth_time)
+            if (datetime.utcnow() - reauth_dt) < timedelta(minutes=15):
+                needs_reauth = False
+        except:
+            pass
+
+    # ... (keep the rest of the route exactly as it was) ...
+
+    if request.method == "POST" and needs_reauth:
+        # 1. Verify Password & 2FA
+        password = request.form.get("password", "")
+        totp_code = request.form.get("totp_code", "").strip()
+        confirm_text = request.form.get("confirm_text", "").strip()
+
+        if confirm_text.upper() != "RESET":
+            flash("You must type 'RESET' to confirm.", "danger")
+            return redirect(url_for("reset_system"))
+
+        conn = db()
+        c = conn.cursor()
+        user = execute_query(c, "SELECT password_hash, totp_secret, totp_enabled FROM users WHERE id = ?", 
+                            (session["user_id"],)).fetchone()
+        
+        if not user or not check_password_hash(user["password_hash"], password):
+            flash("Incorrect password.", "danger")
+            conn.close()
+            return redirect(url_for("reset_system"))
+        
+        if user.get("totp_enabled"):
+            if not totp_code or not pyotp.TOTP(user["totp_secret"]).verify(totp_code, valid_window=1):
+                flash("Invalid 2FA code.", "danger")
+                conn.close()
+                return redirect(url_for("reset_system"))
+        
+        session["reauthenticated_at"] = datetime.utcnow().isoformat()
+        conn.close()
+        flash("✅ Authentication successful. Please click 'EXECUTE RESET' below.", "success")
+        return redirect(url_for("reset_system"))
+
+    if request.method == "POST" and not needs_reauth:
+        # 2. EXECUTE THE WIPE
+        conn = db()
+        c = conn.cursor()
+        
+        try:
+            # Wipe in order of Foreign Key dependencies
+            tables = [
+                'rental_items', 'rental_payments', 'daily_rentals', 
+                'customer_documents', 'loyalty_points', 'damage_claims', 'customer_support', 'customers',
+                'bicycle_health', 'maintenance_records', 'bicycles', 
+                'announcement_comments', 'announcement_voice_notes', 'announcement_reads', 'announcements',
+                'pending_registrations', 'audit_log', 'login_attempts', 'bike_parts', 'appointments'
+            ]
+            
+            for table in tables:
+                execute_query(c, f"DELETE FROM {table};")
+            
+            # Wipe customer user accounts (Keep Admin/Manager/Staff)
+            execute_query(c, "DELETE FROM users WHERE role = 'customer';")
+            
+            # Reset ID sequences (Postgres)
+            for table in tables:
+                try:
+                    execute_query(c, f"ALTER SEQUENCE {table}_id_seq RESTART WITH 1;")
+                except Exception:
+                    pass # Ignore if table/sequence doesn't exist
+
+            conn.commit()
+            
+            log_audit(
+                action="system_reset",
+                entity_type="system",
+                details=f"Admin {session.get('username')} performed a full system reset."
+            )
+            
+            flash("✅ SYSTEM SUCCESSFULLY RESET. All business data is gone. Your account is safe.", "success")
+            return redirect(url_for("dashboard"))
+            
+        except Exception as e:
+            conn.rollback()
+            flash(f"❌ Error during reset: {e}", "danger")
+        finally:
+            conn.close()
+
+    return render_template("reset_system.html", title="System Reset", needs_reauth=needs_reauth)
+
 
 @app.route("/admin/page-access", methods=["GET", "POST"])
 @login_required
@@ -3951,42 +4013,117 @@ def workers():
     )
 
 
-# @app.route("/announcements/<int:announcement_id>/voice-note", methods=["POST"])
-# @login_required
-# def upload_announcement_voice(announcement_id):
-#     audio_data = request.files.get("audio_data")
-#     if audio_data:
-#         # ✅ Use Cloudinary (or local fallback)
-#         uploaded = False
-#         db_path = None
-        
-#         if CLOUDINARY_CLOUD_NAME:
-#             try:
-#                 result = cloudinary.uploader.upload(audio_data, resource_type="video")
-#                 db_path = result["secure_url"]
-#                 uploaded = True
-#             except Exception:
-#                 pass
-                
-#         if not uploaded:
-#             import uuid, os
-#             filename = f"ann_voice_{uuid.uuid4().hex}.webm"
-#             filepath = os.path.join(BASE, 'static', 'audio', filename)
-#             os.makedirs(os.path.dirname(filepath), exist_ok=True)
-#             audio_data.save(filepath)
-#             db_path = f"audio/{filename}"
 
-#         conn = db()
-#         c = conn.cursor()
-#         execute_query(c, """
-#             INSERT INTO announcement_voice_notes (announcement_id, user_id, file_path)
-#             VALUES (?, ?, ?)
-#         """, (announcement_id, session["user_id"], db_path))
-#         conn.commit()
-#         conn.close()
-        
-#         flash("Voice note posted!", "success")
-#     return redirect(url_for("view_announcement", announcement_id=announcement_id))
+# ---------- STAFF: support thread list + reply + resolve ----------
+@app.route("/support")
+@login_required
+@staff_required
+def support():
+    from datetime import datetime, timedelta
+    conn = db(); c = conn.cursor()
+
+    msgs = execute_query(c, """
+        SELECT cs.*, cu.full_name AS cust_name, cu.phone,
+               u.full_name AS staff_name
+        FROM customer_support cs
+        JOIN customers cu ON cu.id = cs.customer_id
+        LEFT JOIN users u ON u.id = cs.user_id
+        ORDER BY cs.created_at DESC
+    """).fetchall()
+
+    # Group into threads (newest-first), then reverse each thread for display
+    threads = {}
+    for m in msgs:
+        cid = m["customer_id"]
+        if cid not in threads:
+            threads[cid] = {"customer_id": cid, "cust_name": m["cust_name"],
+                            "phone": m["phone"], "messages": []}
+        threads[cid]["messages"].append(m)
+
+    threads_list = []
+    for t in threads.values():
+        t["messages"].reverse()
+        latest = t["messages"][-1]
+        t["awaiting_reply"] = (latest["sender_role"] == "customer")
+        t["resolved"] = latest["resolved"]
+        for mm in t["messages"]:
+            if isinstance(mm["created_at"], datetime):
+                mm["created_at"] = (mm["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+        threads_list.append(t)
+
+    conn.close()
+    return render_template("support.html", title="Customer Support", threads=threads_list)
+
+
+@app.route("/support/<int:customer_id>/reply", methods=["POST"])
+@login_required
+@staff_required
+def support_reply(customer_id):
+    audio = request.files.get("audio_data")
+    if not audio or not audio.filename:
+        flash("No audio received.", "danger"); return redirect(url_for("support"))
+    path = save_voice_file(audio, f"support_reply_{customer_id}")
+    conn = db(); c = conn.cursor()
+    execute_query(c, """
+        INSERT INTO customer_support (customer_id, user_id, sender_role, file_path, resolved)
+        VALUES (?, ?, 'staff', ?, FALSE)
+    """, (customer_id, session["user_id"], path))
+    conn.commit(); conn.close()
+    log_audit(action="support_reply", entity_type="customer", entity_id=customer_id,
+              details=f"Staff replied with a voice note")
+    flash("Reply sent!", "success")
+    return redirect(url_for("support"))
+
+
+@app.route("/support/<int:customer_id>/resolve", methods=["POST"])
+@login_required
+@staff_required
+def support_resolve(customer_id):
+    conn = db(); c = conn.cursor()
+    execute_query(c, "UPDATE customer_support SET resolved = TRUE WHERE customer_id = ?", (customer_id,))
+    conn.commit(); conn.close()
+    log_audit(action="support_resolve", entity_type="customer", entity_id=customer_id,
+              details="Marked support thread resolved")
+    flash("Thread marked resolved.", "success")
+    return redirect(url_for("support"))
+
+
+# ---------- CUSTOMER: their own thread + record ----------
+@app.route("/my-support", methods=["GET", "POST"])
+@login_required
+def my_support():
+    from datetime import datetime, timedelta
+    conn = db(); c = conn.cursor()
+    cust = execute_query(c, "SELECT id, full_name FROM customers WHERE user_id = ?", (session["user_id"],)).fetchone()
+    if not cust:
+        conn.close(); flash("Customer profile not found.", "danger"); return redirect(url_for("customer_portal"))
+
+    if request.method == "POST":
+        audio = request.files.get("audio_data")
+        if audio and audio.filename:
+            path = save_voice_file(audio, f"support_cust_{cust['id']}")
+            execute_query(c, "UPDATE customer_support SET resolved = FALSE WHERE customer_id = ?", (cust["id"],))
+            execute_query(c, """
+                INSERT INTO customer_support (customer_id, user_id, sender_role, file_path, resolved)
+                VALUES (?, ?, 'customer', ?, FALSE)
+            """, (cust["id"], session["user_id"], path))
+            conn.commit()
+            flash("Message sent! Our team will respond soon.", "success")
+        conn.close(); return redirect(url_for("my_support"))
+
+    msgs = execute_query(c, """
+        SELECT cs.*, u.full_name AS staff_name
+        FROM customer_support cs
+        LEFT JOIN users u ON u.id = cs.user_id
+        WHERE cs.customer_id = ?
+        ORDER BY cs.created_at ASC
+    """, (cust["id"],)).fetchall()
+    for m in msgs:
+        if isinstance(m["created_at"], datetime):
+            m["created_at"] = (m["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+    conn.close()
+    return render_template("my_support.html", title="Support", messages=msgs, customer=cust)
+
 
 
 @app.route("/announcements/<int:announcement_id>/voice-note", methods=["POST"])
@@ -4403,6 +4540,12 @@ def awards():
     conn.close()
     return render_template("awards_admin.html", title="Award System", users=users, customers=customers, awards=awards_list)
 
+@app.route("/road-safety")
+@login_required
+def road_safety():
+    """Educational page for customers on how to ride safely on shared roads."""
+    return render_template("road_safety.html", title="Road Safety Guide")
+
 
 @app.route("/training/bike-parts", methods=["GET", "POST"])
 @login_required
@@ -4609,14 +4752,11 @@ def award_certificate_pdf(award_id):
             pdf.setFillAlpha(0.09) 
             logo = ImageReader(logo_path)
             pdf.drawImage(logo, width/2 - 50*mm, height/2 - 40*mm, width=180*mm, height=120*mm, mask='auto', preserveAspectRatio=True)
-            #pdf.drawImage(logo, width/2 - 70*mm, height/2 - 40*mm, width=180*mm, height=120*mm, mask='auto', preserveAspectRatio=True)
+           
             pdf.restoreState()
             
-            # Top Right Logo - Shifted further right
-            #pdf.drawImage(logo, width - 45*mm, height - 35*mm, width=35*mm, height=20*mm, mask='auto', preserveAspectRatio=True, anchor='c')
-            #pdf.drawImage(logo, width - 50*mm, height - 30*mm, width=35*mm, height=20*mm, mask='auto', preserveAspectRatio=True, anchor='c')
             pdf.drawImage(logo, width - 60*mm, height - 35*mm, width=46*mm, height=23*mm, mask='auto', preserveAspectRatio=True, anchor='c')
-            #right pdf.drawImage(logo, width - 60*mm, height - 35*mm, width=35*mm, height=20*mm, mask='auto', preserveAspectRatio=True, anchor='c')
+            
         except Exception as e:
             print(f"Could not draw logos: {e}")
 
@@ -5740,103 +5880,6 @@ def public_register():
     conn.close()
     return render_template("public_register.html", title="Register with RAB")
 
-# @app.route("/register-now", methods=["GET", "POST"])
-# def public_register():
-#     """Public page for customers to register themselves."""
-#     conn = db()
-#     c = conn.cursor()
-
-#     if request.method == "POST":
-#         full_name = request.form.get("full_name", "").strip()
-#         phone = request.form.get("phone", "").strip()
-#         id_number = request.form.get("id_number", "").strip()
-#         email = request.form.get("email", "").strip()
-#         address = request.form.get("address", "").strip()
-#         gender = request.form.get("gender", "").strip()
-#         terms_accepted = 1 if request.form.get("terms_accepted") == "on" else 0
-#         signature_data = request.form.get("signature_data", "").strip()
-        
-#         id_photo = request.files.get("id_photo")
-#         customer_photo = request.files.get("customer_photo")
-
-#         # ✅ Check if ID / Passport number already exists
-#         if id_number:
-#             existing = execute_query(c, """
-#                 SELECT id FROM customers WHERE id_number = ?
-#                 UNION 
-#                 SELECT id FROM pending_registrations WHERE id_number = ?
-#             """, (id_number, id_number)).fetchone()
-            
-#             if existing:
-#                 flash("A customer with this ID / Passport number already exists in the system.", "danger")
-#                 return redirect(url_for("public_register"))
-
-#         # ✅ Validate the formats
-#         is_valid, error_msg = validate_namibian_identity(phone, id_number)
-#         if not is_valid:
-#             flash(error_msg, "danger")
-#             return redirect(url_for("public_register"))
-
-#         if not full_name or not phone:
-#             flash("Name and phone are required.", "danger")
-#             return redirect(url_for("public_register"))
-        
-#         if not terms_accepted:
-#             flash("You must accept the Terms & Conditions.", "danger")
-#             return redirect(url_for("public_register"))
-
-#         # ✅ Handle File Uploads
-#         import os
-#         from werkzeug.utils import secure_filename
-#         UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
-#         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-#         # Check sizes to prevent hanging
-#         MAX_FILE_SIZE = 5 * 1024 * 1024 # 5 MB
-        
-#         id_path = None
-#         if id_photo and id_photo.filename:
-#             id_photo.seek(0, os.SEEK_END)
-#             file_size = id_photo.tell()
-#             id_photo.seek(0)
-#             if file_size > MAX_FILE_SIZE:
-#                 flash("Your ID photo is too large. Please upload a file smaller than 5MB.", "danger")
-#                 return redirect(url_for("public_register"))
-            
-#             filename = f"pending_id_{secure_filename(id_photo.filename)}"
-#             id_photo.save(os.path.join(UPLOAD_FOLDER, filename))
-#             id_path = f"uploads/{filename}"
-
-#         photo_path = None
-#         if customer_photo and customer_photo.filename:
-#             customer_photo.seek(0, os.SEEK_END)
-#             file_size = customer_photo.tell()
-#             customer_photo.seek(0)
-#             if file_size > MAX_FILE_SIZE:
-#                 flash("Your customer photo is too large. Please upload a file smaller than 5MB.", "danger")
-#                 return redirect(url_for("public_register"))
-
-#             filename = f"pending_photo_{secure_filename(customer_photo.filename)}"
-#             customer_photo.save(os.path.join(UPLOAD_FOLDER, filename))
-#             photo_path = f"uploads/{filename}"
-
-#         # Insert into pending table
-
-#         # Insert into pending table
-#         execute_query(c, """
-#             INSERT INTO pending_registrations 
-#             (full_name, id_number, phone, email, address, gender, id_photo_path, customer_photo_path, signature_data, terms_accepted)
-#             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-#         """, (full_name, id_number, phone, email, address, gender, id_path, photo_path, signature_data, terms_accepted))
-        
-#         conn.commit()
-#         conn.close()
-
-#         flash("Thank you for registering with RAB! Your application has been sent. RAB staff will review it shortly.", "success")
-#         return redirect(url_for("registration_success"))
-
-#     conn.close()
-#     return render_template("public_register.html", title="Register with RAB")
 
 @app.route("/check-status", methods=["GET", "POST"])
 def check_status():
@@ -6995,6 +7038,28 @@ def dashboard():
   
 
 
+    # ✅ Recent customer-support voice notes + open ticket count
+
+
+
+     # ✅ Recent customer-support voice notes + open ticket count
+    recent_support = execute_query(c, """
+        SELECT cs.id, cs.sender_role, cs.file_path, cs.created_at,
+               cu.full_name AS cust_name, u.full_name AS staff_name
+        FROM customer_support cs
+        JOIN customers cu ON cu.id = cs.customer_id
+        LEFT JOIN users u ON u.id = cs.user_id
+        ORDER BY cs.created_at DESC LIMIT 5
+    """).fetchall()
+    for v in recent_support:
+        if isinstance(v["created_at"], datetime):
+            v["created_at"] = (v["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+
+    open_support = get_single_value(c, """
+        SELECT COUNT(DISTINCT customer_id) FROM customer_support WHERE resolved = FALSE
+    """) or 0
+
+
     conn.close()
     
     # Ensure revenue is never negative
@@ -7018,264 +7083,13 @@ def dashboard():
         stations=stations,
         recent_voice_notes=recent_voice_notes,
         pending_online_regs=pending_online_regs,
-        online_users=online_users  # <-- Add this        
+        online_users=online_users,
+        recent_support=recent_support,
+        open_support=open_support,          
+                   
     )
 
-# @app.route("/rentals/start", methods=["GET", "POST"])
-# @login_required
-# @staff_required
-# def start_rental():
-#     from datetime import datetime, timedelta, timezone
-#     import pytz
 
-#     conn = db()
-#     c = conn.cursor()
-
-#     if request.method == "POST":
-#         customer_id = request.form.get("customer_id")
-#         bicycle_id = request.form.get("bicycle_id")
-#         start_time = request.form.get("start_time")
-
-#         # ✅ Block if customer has unpaid damage claims
-#         unpaid = get_customer_unpaid_damages(c, customer_id)
-#         if unpaid > 0:
-#             conn.close()
-#             flash(
-#                 f"Cannot start rental: this customer has an unpaid damage balance of N$ {unpaid:.2f}. "
-#                 f"Please settle the balance first.",
-#                 "danger"
-#             )
-#             return redirect(url_for("customer_damages", customer_id=customer_id))
-
-
-#         # ✅ Block if customer has an unpaid balance from a COMPLETED rental
-#         unpaid_rental = execute_query(c, """
-#             SELECT r.id, (r.total_cost - (COALESCE((SELECT SUM(amount) FROM rental_payments WHERE daily_rental_id = r.id), 0) + COALESCE(r.deposit_paid, 0))) AS balance
-#             FROM daily_rentals r
-#             WHERE r.customer_id = ? 
-#               AND r.status = 'Completed' 
-#               AND r.payment_status != 'Paid'
-#         """, (customer_id,)).fetchall()
-
-#         # Filter for actual outstanding amounts
-#         for debt in unpaid_rental:
-#             if debt["balance"] and float(debt["balance"]) > 0:
-#                 conn.close()
-#                 flash(
-#                     f"Cannot start rental: this customer has an unpaid balance of N$ {float(debt['balance']):.2f} "
-#                     f"from a previous rental (#{debt['id']}). Please settle the balance first.",
-#                     "danger"
-#                 )
-#                 return redirect(url_for("record_payment", rental_id=debt["id"]))
-
-
-
-
-#         # ✅ Block if customer already has an active rental
-#         existing_active = execute_query(c, """
-#             SELECT r.id, b.bike_code
-#             FROM daily_rentals r
-#             JOIN bicycles b ON b.id = r.bicycle_id
-#             WHERE r.customer_id = ? AND r.status = 'Active'
-#         """, (customer_id,)).fetchall()
-
-#         if existing_active:
-#             conn.close()
-#             if len(existing_active) == 1:
-#                 active_info = existing_active[0]
-#                 flash(
-#                     f"Cannot start a new rental — this customer already has an active rental "
-#                     f"(#{active_info['id']} on bike {active_info['bike_code']}). "
-#                     f"Please end that rental first.",
-#                     "danger"
-#                 )
-#             else:
-#                 bikes_list = ", ".join(a["bike_code"] for a in existing_active)
-#                 flash(
-#                     f"Cannot start a new rental — this customer already has {len(existing_active)} active rentals "
-#                     f"(bikes: {bikes_list}). Please end them first.",
-#                     "danger"
-#                 )
-#             return redirect(url_for("start_rental"))
-
-#         # ✅ Block if the BICYCLE is already actively rented to ANYONE
-#         bike_active = execute_query(c, """
-#             SELECT r.id, c.full_name
-#             FROM daily_rentals r
-#             JOIN customers c ON c.id = r.customer_id
-#             WHERE r.bicycle_id = ? AND r.status = 'Active'
-#         """, (bicycle_id,)).fetchone()
-
-#         if bike_active:
-#             conn.close()
-#             # Note: Changed 'bike['bike_code']' to just 'bicycle_id' to prevent NameError if bike isn't loaded yet
-#             flash(
-#                 f"Cannot start rental: Bicycle ID {bicycle_id} is already actively rented to {bike_active['full_name']}. "
-#                 f"Please end that rental first.",
-#                 "danger"
-#             )
-#             return redirect(url_for("start_rental"))
-
-#         # ✅ Convert local time to UTC for storage
-#         if start_time:
-#             local_dt = datetime.fromisoformat(start_time)
-#             utc_dt = local_dt - timedelta(hours=2)
-#             start_time_utc = utc_dt.strftime("%Y-%m-%d %H:%M:%S")
-#         else:
-#             utc_dt = datetime.now(timezone.utc).replace(tzinfo=None)
-#             start_time_utc = utc_dt.strftime("%Y-%m-%d %H:%M:%S")
-
-#         # Verify customer is verified
-#         customer = execute_query(c, """
-#             SELECT verification_status FROM customers WHERE id = ?
-#         """, (customer_id,)).fetchone()
-
-#         if not customer or customer["verification_status"] != "Verified":
-#             conn.close()
-#             flash("Customer must be verified before renting.", "danger")
-#             return redirect(url_for("start_rental"))
-
-#         # ✅ Check if the Expected Drop-off Station is Open
-#         if expected_end_station_id:
-#             station_status = execute_query(c, "SELECT status, name FROM branches WHERE id = ?", (expected_end_station_id,)).fetchone()
-#             if station_status and station_status["status"] != "Open":
-#                 conn.close()
-#                 flash(f"Cannot start rental: The expected drop-off station '{station_status['name']}' is currently {station_status['status']}.", "danger")
-#                 return redirect(url_for("start_rental"))
-
-
-
-#         # ✅ Check if Customer is Banned
-#         from datetime import datetime
-#         customer_ban = execute_query(c, "SELECT banned_until FROM customers WHERE id = ?", (customer_id,)).fetchone()
-        
-#         if customer_ban and customer_ban["banned_until"]:
-#             ban_date = datetime.strptime(customer_ban["banned_until"], '%Y-%m-%d').date()
-#             today = datetime.now().date()
-            
-#             if ban_date > today:
-#                 conn.close()
-#                 flash(f"Cannot start rental: This customer is currently BANNED until {customer_ban['banned_until']} due to multiple serious warnings.", "danger")
-#                 return redirect(url_for("start_rental"))
-
-
-
-#         bike = execute_query(c, """
-#             SELECT hourly_rate, daily_cap, deposit_amount FROM bicycles WHERE id = ?
-#         """, (bicycle_id,)).fetchone()
-
-#         if not bike:
-#             conn.close()
-#             flash("Bicycle not found.", "danger")
-#             return redirect(url_for("start_rental"))
-
-#         try:
-#             deposit_paid = float(request.form.get("deposit_paid", bike["deposit_amount"]))
-#             if deposit_paid < 0:
-#                 deposit_paid = 0
-#         except (TypeError, ValueError):
-#             deposit_paid = bike["deposit_amount"]
-
-#         # Station
-#         start_station_id = request.form.get("start_station_id") or None
-#         if start_station_id:
-#             start_station_id = int(start_station_id)
-            
-#         # ✅ Expected drop-off station
-#         expected_end_station_id = request.form.get("expected_end_station_id") or None
-#         if expected_end_station_id:
-#             expected_end_station_id = int(expected_end_station_id)
-
-#         # ✅ SINGLE Rental Insertion (includes expected_end_station_id)
-#         rental_id = insert_and_get_id(c, """
-#             INSERT INTO daily_rentals (
-#                 customer_id, bicycle_id, start_time,
-#                 hourly_rate, daily_cap, deposit_paid, status,
-#                 agreement_signed, started_by_user_id, start_station_id,
-#                 expected_end_station_id
-#             ) VALUES (?, ?, ?, ?, ?, ?, 'Active', 1, ?, ?, ?)
-#         """, (customer_id, bicycle_id, start_time_utc,
-#               bike["hourly_rate"], bike["daily_cap"], deposit_paid,
-#               session["user_id"], start_station_id, expected_end_station_id))
-
-#         # Update bicycle status
-#         execute_query(c, "UPDATE bicycles SET status = 'Rented' WHERE id = ?", (bicycle_id,))
-
-#         # Save start condition note
-#         start_condition_note = (request.form.get("start_condition_note") or "").strip()
-#         execute_query(c, """
-#             UPDATE daily_rentals SET start_condition_note = ? WHERE id = ?
-#         """, (start_condition_note, rental_id))
-
-#         # Save selected items (moved to AFTER rental_id is created)
-#         selected_items = request.form.getlist("items")
-#         for item_id in selected_items:
-#             try:
-#                 execute_query(c, """
-#                     INSERT INTO rental_items (rental_id, item_id, given_by_user_id)
-#                     VALUES (?, ?, ?)
-#                 """, (rental_id, int(item_id), session["user_id"]))
-#             except Exception as e:
-#                 print(f"skip item {item_id}: {e}")
-
-#         # Audit Log
-#         log_audit(
-#             action="rental_start",
-#             entity_type="daily_rental",
-#             entity_id=rental_id,
-#             details=f"Started rental #{rental_id} — customer_id={customer_id}, bike_id={bicycle_id}, "
-#                     f"deposit=N${deposit_paid:.2f}, station_id={start_station_id}"
-#         )
-
-#         conn.commit()
-#         conn.close()
-
-#         flash(f"Rental started successfully! Rental ID: {rental_id}", "success")
-#         return redirect(url_for("dashboard"))
-
-#     # =============================================
-#     # GET branch
-#     # =============================================
-#     customers = execute_query(c, """
-#         SELECT id, full_name, phone FROM customers 
-#         WHERE verification_status = 'Verified' 
-#         ORDER BY full_name
-#     """).fetchall()
-
-#     bicycles = execute_query(c, """
-#         SELECT id, bike_code, brand, model, hourly_rate, daily_cap 
-#         FROM bicycles WHERE status = 'Available'
-#     """).fetchall()
-
-#     stations = execute_query(c, """
-#         SELECT id, name, location FROM branches
-#         WHERE is_active = 1
-#         ORDER BY name
-#     """).fetchall()
-
-#     items_list = execute_query(c, """
-#         SELECT id, name FROM items WHERE is_active = 1 ORDER BY name
-#     """).fetchall()
-
-#     default_station_id = session.get("station_id")
-#     if not default_station_id and stations:
-#         default_station_id = stations[0]["id"]
-
-#     conn.close()
-
-#     namibia_tz = pytz.timezone('Africa/Windhoek')
-#     local_now = datetime.now(namibia_tz)
-
-#     return render_template(
-#         "start_rental.html",
-#         title="Start Rental",
-#         customers=customers,
-#         bicycles=bicycles,
-#         stations=stations,
-#         items_list=items_list,
-#         default_station_id=default_station_id,
-#         now=local_now.strftime("%Y-%m-%dT%H:%M")
-#     )
 
 @app.route("/rentals/start", methods=["GET", "POST"])
 @login_required
@@ -7422,7 +7236,7 @@ def start_rental():
         if expected_end_station_id:
             expected_end_station_id = int(expected_end_station_id)
             
-            # ✅ MOVED HERE: Check if the Expected Drop-off Station is Open (NOW IT'S SAFE)
+            # ✅ Check if the Expected Drop-off Station is Open
             station_status = execute_query(c, "SELECT status, name FROM branches WHERE id = ?", (expected_end_station_id,)).fetchone()
             if station_status and station_status["status"] != "Open":
                 conn.close()
@@ -7461,24 +7275,13 @@ def start_rental():
             except Exception as e:
                 print(f"skip item {item_id}: {e}")
 
-        # ✅ Fetch recent GENERAL voice notes for the Start Rental page
-        recent_voice_notes = execute_query(c, """
-            SELECT avn.file_path, avn.created_at, u.full_name 
-            FROM announcement_voice_notes avn
-            JOIN users u ON u.id = avn.user_id
-            WHERE avn.announcement_id IS NULL
-            ORDER BY avn.created_at DESC LIMIT 5
-        """).fetchall()
-
-
-        # Audit Log
+        # ✅ Audit Log (FIXED: removed recent_voice_notes parameter)
         log_audit(
             action="rental_start",
             entity_type="daily_rental",
             entity_id=rental_id,
             details=f"Started rental #{rental_id} — customer_id={customer_id}, bike_id={bicycle_id}, "
-                    f"deposit=N${deposit_paid:.2f}, station_id={start_station_id}",
-            recent_voice_notes=recent_voice_notes        
+                    f"deposit=N${deposit_paid:.2f}, station_id={start_station_id}"
         )
 
         conn.commit()
@@ -7502,7 +7305,7 @@ def start_rental():
     """).fetchall()
 
     stations = execute_query(c, """
-        SELECT id, name, location, status FROM branches
+        SELECT id, name, location, status, status_message FROM branches
         WHERE is_active = 1
         ORDER BY name
     """).fetchall()
@@ -7514,23 +7317,6 @@ def start_rental():
     default_station_id = session.get("station_id")
     if not default_station_id and stations:
         default_station_id = stations[0]["id"]
-
-
-    stations = execute_query(c, """
-        SELECT id, name, location, status, status_message FROM branches
-        WHERE is_active = 1
-        ORDER BY name
-    """).fetchall()        
-
-
-    # ✅ Fetch recent voice notes for the Start Rental page
-    recent_voice_notes = execute_query(c, """
-        SELECT avn.file_path, avn.created_at, u.full_name 
-        FROM announcement_voice_notes avn
-        JOIN users u ON u.id = avn.user_id
-        ORDER BY avn.created_at DESC LIMIT 5
-    """).fetchall()
-
 
     # ✅ Fetch recent GENERAL voice notes for the Start Rental page
     recent_voice_notes = execute_query(c, """
@@ -7562,6 +7348,7 @@ def start_rental():
         now=local_now.strftime("%Y-%m-%dT%H:%M"),
         recent_voice_notes=recent_voice_notes
     )
+
 
 
 
@@ -7909,290 +7696,6 @@ def admin_run_cleanup():
 
 
 
-
-
-# @app.route("/customers", methods=["GET", "POST"])
-# @login_required
-# @staff_required
-# @limiter.limit("10 per minute")
-# def customers():
-#     import os
-#     import cloudinary
-#     import cloudinary.uploader
-#     from werkzeug.utils import secure_filename
-    
-#     conn = db()
-#     c = conn.cursor()
-    
-#     is_postgres = os.environ.get("DATABASE_URL") is not None
-    
-#     # ✅ Check if Cloudinary is configured
-#     use_cloudinary = all([
-#         os.environ.get("CLOUDINARY_CLOUD_NAME"),
-#         os.environ.get("CLOUDINARY_API_KEY"),
-#         os.environ.get("CLOUDINARY_API_SECRET")
-#     ])
-    
-#     if use_cloudinary:
-#         try:
-#             cloudinary.config(
-#                 cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
-#                 api_key=os.environ.get("CLOUDINARY_API_KEY"),
-#                 api_secret=os.environ.get("CLOUDINARY_API_SECRET")
-#             )
-#             print("✅ Cloudinary configured successfully!")
-#         except Exception as e:
-#             print(f"❌ Cloudinary config error: {e}")
-#             use_cloudinary = False
-    
-#     if request.method == "POST":
-#         full_name = request.form.get("full_name", "").strip()
-#         phone = request.form.get("phone", "").strip()
-#         id_number = request.form.get("id_number", "").strip()
-#         email = request.form.get("email", "").strip()
-#         address = request.form.get("address", "").strip()
-#         id_photo = request.files.get("id_photo") if request.files else None
-#         customer_photo = request.files.get("customer_photo") if request.files else None
-        
-#         terms_accepted = 1 if request.form.get("terms_accepted") == "on" else 0
-#         signature_data = request.form.get("signature_data", "").strip()
-
-
-#         # ✅ Validate the formats
-#         is_valid, error_msg = validate_namibian_identity(phone, id_number)
-#         if not is_valid:
-#             flash(error_msg, "danger")
-#             conn.close()
-#             return redirect(url_for("customers"))
-
-#         # ✅ Check if ID / Passport number already exists
-#         if id_number:
-#             existing = execute_query(c, "SELECT id FROM customers WHERE id_number = ?", (id_number,)).fetchone()
-#             if existing:
-#                 flash("A customer with this ID / Passport number already exists in the system.", "danger")
-#                 conn.close()
-#                 return redirect(url_for("customers"))
-
-
-#         if not full_name or not phone:
-#             flash("Name and phone are required.", "danger")
-#             return redirect(url_for("customers"))
-        
-#         if not terms_accepted:
-#             flash("You must accept the Terms & Conditions.", "danger")
-#             return redirect(url_for("customers"))
-        
-#         # Create username
-#         username = phone
-#         existing_user = execute_query(c, "SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-#         if existing_user:
-#             if email:
-#                 username = email
-#             else:
-#                 username = f"cust_{phone}"
-        
-
-        
-#         import secrets
-#         import string
-#         # ✅ Generate a policy-compliant random password (10 chars, letters + digits + special)
-#         alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
-#         temp_password = ''.join(secrets.choice(alphabet) for _ in range(12))
-#         # Guarantee at least one of each class in case of unlucky draw
-#         temp_password = (
-#             secrets.choice(string.ascii_letters)
-#             + secrets.choice(string.digits)
-#             + secrets.choice("!@#$%^&*")
-#             + ''.join(secrets.choice(alphabet) for _ in range(9))
-#         )
-#         # Shuffle so the classes aren't always at the start
-#         temp_list = list(temp_password)
-#         secrets.SystemRandom().shuffle(temp_list)
-#         temp_password = ''.join(temp_list)
-#         password_hash = generate_password_hash(temp_password)
-
-#         # Insert user
-#         try:
-#             execute_query(c, """
-#                 INSERT INTO users (username, password_hash, role, full_name, email)
-#                 VALUES (?, ?, 'customer', ?, ?)
-#             """, (username, password_hash, full_name, email))
-            
-#             user_result = execute_query(c, "SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-#             if user_result:
-#                 user_id = user_result['id'] if isinstance(user_result, dict) else user_result[0]
-#             else:
-#                 flash("Error: User created but ID not found.", "danger")
-#                 return redirect(url_for("customers"))
-#         except sqlite3.IntegrityError:
-#             flash(f"Username '{username}' already exists.", "danger")
-#             return redirect(url_for("customers"))
-        
-#         # Insert customer
-#         # execute_query(c, """
-#         #     INSERT INTO customers (
-#         #         full_name, id_number, phone, email, address, user_id,
-#         #         terms_accepted, terms_accepted_date, signature_data, verification_status
-#         #     ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'Pending')
-#         # """, (full_name, id_number, phone, email, address, user_id, 
-#         #       terms_accepted, signature_data))
-        
-#         # customer_id = c.lastrowid
-
-#         # Get the gender from the form
-#         gender = request.form.get("gender", "").strip()
-
-#         customer_id = insert_and_get_id(c, """
-#             INSERT INTO customers (
-#                 full_name, id_number, phone, email, address, user_id,
-#                 terms_accepted, terms_accepted_date, signature_data, verification_status, gender
-#             ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, 'Pending', ?)
-#         """, (full_name, id_number, phone, email, address, user_id,
-#               terms_accepted, signature_data, gender))
-
-#         # if is_postgres:
-#         #     customer_result = execute_query(c, "SELECT id FROM customers WHERE user_id = ?", (user_id,)).fetchone()
-#         #     if customer_result:
-#         #         customer_id = customer_result['id'] if isinstance(customer_result, dict) else customer_result[0]
-        
-#         session["customer_id"] = customer_id
-        
-
-#         log_audit(
-#             action="customer_create",
-#             entity_type="customer",
-#             entity_id=customer_id,
-#             details=f"Registered customer '{full_name}' (phone: {phone})"
-#         )
-
-
-#         # ✅ Save documents
-#         UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
-#         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-#         # ✅ Handle ID Photo
-#         if id_photo and id_photo.filename:
-#             ok, err, ext = validate_upload(id_photo)
-#             if not ok:
-#                 flash(f"ID document rejected: {err}", "danger")
-#                 return redirect(url_for("customers"))
-
-#             uploaded = False
-
-#             # Try Cloudinary first
-#             if use_cloudinary:
-#                 try:
-#                     upload_result = cloudinary.uploader.upload(id_photo)
-#                     file_url = upload_result['secure_url']
-#                     execute_query(c, """
-#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
-#                         VALUES (?, 'id_copy', ?)
-#                     """, (customer_id, file_url))
-#                     flash("ID document uploaded successfully!", "success")
-#                     uploaded = True
-#                 except Exception as e:
-#                     print(f"❌ Cloudinary upload failed: {e}")
-
-#             # Fallback to private local storage
-#             if not uploaded:
-#                 try:
-#                     filename = f"id_{customer_id}_{secure_filename(id_photo.filename)}"
-#                     filepath = os.path.join(PRIVATE_UPLOAD_FOLDER, filename)
-#                     id_photo.save(filepath)
-#                     execute_query(c, """
-#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
-#                         VALUES (?, 'id_copy', ?)
-#                     """, (customer_id, f"private_uploads/{filename}"))
-#                     flash("ID document saved securely!", "success")
-#                 except Exception as e:
-#                     print(f"❌ Local save failed: {e}")
-#                     flash("Error uploading ID document.", "danger")
-#                     return redirect(url_for("customers"))
-
-#         # ✅ Handle Customer Photo
-#         if customer_photo and customer_photo.filename:
-#             ok, err, ext = validate_upload(customer_photo)
-#             if not ok:
-#                 flash(f"Customer photo rejected: {err}", "danger")
-#                 return redirect(url_for("customers"))
-
-#             uploaded = False
-
-#             if use_cloudinary:
-#                 try:
-#                     upload_result = cloudinary.uploader.upload(customer_photo)
-#                     file_url = upload_result['secure_url']
-#                     execute_query(c, """
-#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
-#                         VALUES (?, 'customer_photo', ?)
-#                     """, (customer_id, file_url))
-#                     flash("Customer photo uploaded successfully!", "success")
-
-#                     log_audit(
-#                         action="document_upload",
-#                         entity_type="customer",
-#                         entity_id=customer_id,
-#                         details=f"Uploaded {doc_type} for customer #{customer_id}"
-#                     )
-
-#                     uploaded = True
-#                 except Exception as e:
-#                     print(f"❌ Cloudinary upload failed: {e}")
-
-#             if not uploaded:
-#                 try:
-#                     filename = f"photo_{customer_id}_{secure_filename(customer_photo.filename)}"
-#                     filepath = os.path.join(PRIVATE_UPLOAD_FOLDER, filename)
-#                     customer_photo.save(filepath)
-#                     execute_query(c, """
-#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
-#                         VALUES (?, 'customer_photo', ?)
-#                     """, (customer_id, f"private_uploads/{filename}"))
-#                     flash("Customer photo saved securely!", "success")
-#                 except Exception as e:
-#                     print(f"❌ Local save failed: {e}")
-#                     flash("Error uploading customer photo.", "danger")
-#                     return redirect(url_for("customers"))
-
-
-
-        
-#         conn.commit()
-#         conn.close()
-        
-#         flash(f"Customer '{full_name}' registered successfully!", "success")
-#         flash(f"🔑 Login Credentials - Username: {username}, Password: {temp_password}", "success")
-#         flash("📌 Please give these credentials to the customer.", "info")
-        
-#         return redirect(url_for("customers"))
-    
-
-#     # =============================================
-#     # SEARCH FILTER (case-insensitive on both DBs)
-#     # =============================================
-#     search = (request.args.get("search") or "").strip()
-
-#     if search:
-#         like = f"%{search}%"
-#         customers = execute_query(c, f"""
-#             SELECT * FROM customers
-#             WHERE {ci_like('full_name', '?')}
-#                OR {ci_like('phone', '?')}
-#                OR {ci_like('id_number', '?')}
-#                OR {ci_like('email', '?')}
-#             ORDER BY full_name
-#         """, (like, like, like, like)).fetchall()
-#     else:
-#         customers = execute_query(c, "SELECT * FROM customers ORDER BY full_name").fetchall()
-
-#     conn.close()
-
-#     return render_template(
-#         "customers.html",
-#         title="Customers",
-#         customers=customers,
-#         search=search
-#     )
 
 
 @app.route("/customers", methods=["GET", "POST"])
@@ -10244,7 +9747,6 @@ def payment_history():
         total_settled=total_settled,
     )
 
-
 @app.route("/reports/revenue")
 @login_required
 @manager_required
@@ -10294,9 +9796,11 @@ def revenue_report():
                     DATE(dr.start_time) AS date,
                     COUNT(*) AS transactions,
                     COALESCE(SUM(dr.total_cost), 0) AS total,
-                    STRING_AGG(DISTINCT b.bike_code, ', ') AS bikes_rented
+                    STRING_AGG(DISTINCT b.bike_code, ', ') AS bikes_rented,
+                    COALESCE(STRING_AGG(DISTINCT c.full_name, ', '), '—') AS customers
                 FROM daily_rentals dr
                 LEFT JOIN bicycles b ON b.id = dr.bicycle_id
+                LEFT JOIN customers c ON c.id = dr.customer_id
                 WHERE DATE(dr.start_time) = %s
                   AND dr.status IN ('Completed', 'Active')
                 GROUP BY DATE(dr.start_time)
@@ -10355,9 +9859,11 @@ def revenue_report():
                     date(dr.start_time) AS date,
                     COUNT(*) AS transactions,
                     COALESCE(SUM(dr.total_cost), 0) AS total,
-                    GROUP_CONCAT(DISTINCT b.bike_code) AS bikes_rented
+                    GROUP_CONCAT(DISTINCT b.bike_code) AS bikes_rented,
+                    COALESCE(GROUP_CONCAT(DISTINCT c.full_name), '—') AS customers
                 FROM daily_rentals dr
                 LEFT JOIN bicycles b ON b.id = dr.bicycle_id
+                LEFT JOIN customers c ON c.id = dr.customer_id
                 WHERE date(dr.start_time) = ?
                   AND dr.status IN ('Completed', 'Active')
                 GROUP BY date(dr.start_time)
@@ -10426,8 +9932,10 @@ def revenue_report():
                     EXTRACT(WEEK FROM dr.start_time) AS week,
                     EXTRACT(YEAR FROM dr.start_time) AS year,
                     COUNT(*) AS transactions,
-                    COALESCE(SUM(dr.total_cost), 0) AS total
+                    COALESCE(SUM(dr.total_cost), 0) AS total,
+                    COALESCE(STRING_AGG(DISTINCT c.full_name, ', '), '—') AS customers
                 FROM daily_rentals dr
+                LEFT JOIN customers c ON c.id = dr.customer_id
                 WHERE EXTRACT(WEEK FROM dr.start_time) = %s
                   AND EXTRACT(YEAR FROM dr.start_time) = %s
                   AND dr.status IN ('Completed', 'Active')
@@ -10483,8 +9991,10 @@ def revenue_report():
                     strftime('%W', dr.start_time) AS week,
                     strftime('%Y', dr.start_time) AS year,
                     COUNT(*) AS transactions,
-                    COALESCE(SUM(dr.total_cost), 0) AS total
+                    COALESCE(SUM(dr.total_cost), 0) AS total,
+                    COALESCE(GROUP_CONCAT(DISTINCT c.full_name), '—') AS customers
                 FROM daily_rentals dr
+                LEFT JOIN customers c ON c.id = dr.customer_id
                 WHERE strftime('%W', dr.start_time) = ?
                   AND strftime('%Y', dr.start_time) = ?
                   AND dr.status IN ('Completed', 'Active')
@@ -10552,8 +10062,10 @@ def revenue_report():
                     TO_CHAR(dr.start_time, 'YYYY-MM') AS month,
                     COUNT(*) AS transactions,
                     COALESCE(SUM(dr.total_cost), 0) AS total,
-                    COUNT(DISTINCT dr.customer_id) AS unique_customers
+                    COUNT(DISTINCT dr.customer_id) AS unique_customers,
+                    COALESCE(STRING_AGG(DISTINCT c.full_name, ', '), '—') AS customers
                 FROM daily_rentals dr
+                LEFT JOIN customers c ON c.id = dr.customer_id
                 WHERE TO_CHAR(dr.start_time, 'YYYY-MM') = %s
                   AND dr.status IN ('Completed', 'Active')
                 GROUP BY TO_CHAR(dr.start_time, 'YYYY-MM')
@@ -10600,8 +10112,10 @@ def revenue_report():
                     strftime('%Y-%m', dr.start_time) AS month,
                     COUNT(*) AS transactions,
                     COALESCE(SUM(dr.total_cost), 0) AS total,
-                    COUNT(DISTINCT dr.customer_id) AS unique_customers
+                    COUNT(DISTINCT dr.customer_id) AS unique_customers,
+                    COALESCE(GROUP_CONCAT(DISTINCT c.full_name), '—') AS customers
                 FROM daily_rentals dr
+                LEFT JOIN customers c ON c.id = dr.customer_id
                 WHERE strftime('%Y-%m', dr.start_time) = ?
                   AND dr.status IN ('Completed', 'Active')
                 GROUP BY strftime('%Y-%m', dr.start_time)
@@ -10750,6 +10264,94 @@ def revenue_report():
         outstanding_damages=outstanding_damages,
         outstanding_count=outstanding_count,
     )
+
+
+
+# ============================================================
+# ✅ LIVE POLLING (real-time dashboard without page reloads)
+# ============================================================
+
+@app.route("/api/live-stats")
+@login_required
+def live_stats():
+    """JSON counters for the LivePoller. Cheap, indexed queries only."""
+    conn = db()
+    c = conn.cursor()
+    user_id = session["user_id"]
+
+    data = {}
+
+    # Pending online registrations
+    data["pending_regs"] = get_single_value(c, """
+        SELECT COUNT(*) FROM pending_registrations WHERE status = 'Pending'
+    """) or 0
+
+    # Unread announcements (staff only)
+    if session.get("role") != "customer":
+        data["unread_announcements"] = get_single_value(c, """
+            SELECT COUNT(*) FROM announcements a
+            LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.user_id = ?
+            WHERE a.is_active = 1 AND ar.id IS NULL
+        """, (user_id,)) or 0
+        data["active_rentals"] = get_single_value(c, """
+            SELECT COUNT(*) FROM daily_rentals WHERE status = 'Active'
+        """) or 0
+        data["available_bikes"] = get_single_value(c, """
+            SELECT COUNT(*) FROM bicycles WHERE status = 'Available'
+        """) or 0
+        data["open_support"] = get_single_value(c, """
+            SELECT COUNT(DISTINCT customer_id) FROM customer_support WHERE resolved = FALSE
+        """) or 0
+        # Station status hash — lets the poller detect "a station just closed"
+        rows = execute_query(c, """
+            SELECT id, status FROM branches WHERE is_active = 1 ORDER BY id
+        """).fetchall()
+        data["station_hash"] = "|".join(f"{r['id']}:{r['status']}" for r in rows)
+    else:
+        data["unread_announcements"] = 0
+
+    conn.close()
+    return jsonify(data)
+
+
+@app.route("/api/live-feed")
+@login_required
+@staff_required
+def live_feed():
+    """Pre-rendered HTML fragment for voice notes + support feed (staff only)."""
+    from datetime import datetime, timedelta
+    conn = db()
+    c = conn.cursor()
+
+    recent_voice_notes = execute_query(c, """
+        SELECT avn.id, avn.file_path, avn.created_at, u.full_name
+        FROM announcement_voice_notes avn
+        JOIN users u ON u.id = avn.user_id
+        WHERE avn.announcement_id IS NULL
+        ORDER BY avn.created_at DESC LIMIT 5
+    """).fetchall()
+    for v in recent_voice_notes:
+        if isinstance(v["created_at"], datetime):
+            v["created_at"] = (v["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+
+    recent_support = execute_query(c, """
+        SELECT cs.id, cs.sender_role, cs.file_path, cs.created_at,
+               cu.full_name AS cust_name, u.full_name AS staff_name
+        FROM customer_support cs
+        JOIN customers cu ON cu.id = cs.customer_id
+        LEFT JOIN users u ON u.id = cs.user_id
+        ORDER BY cs.created_at DESC LIMIT 5
+    """).fetchall()
+    for s in recent_support:
+        if isinstance(s["created_at"], datetime):
+            s["created_at"] = (s["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+
+    conn.close()
+    return render_template("partials/live_feed.html",
+                           recent_voice_notes=recent_voice_notes,
+                           recent_support=recent_support)
+
+
 
 
 @app.route("/staff-activity/export.csv")
@@ -11219,177 +10821,6 @@ def rental_agreement_pdf(rental_id):
     return send_file(buf, as_attachment=True, download_name=filename, mimetype="application/pdf")
 
 
-
-# @app.route("/customers/<int:customer_id>/edit", methods=["GET", "POST"])
-# @login_required
-# @staff_required
-# def edit_customer(customer_id):
-#     """Edit customer details."""
-#     from datetime import datetime
-#     import os
-    
-#     conn = db()
-#     c = conn.cursor()
-    
-#     # Check if Cloudinary is configured
-#     use_cloudinary = all([
-#         os.environ.get("CLOUDINARY_CLOUD_NAME"),
-#         os.environ.get("CLOUDINARY_API_KEY"),
-#         os.environ.get("CLOUDINARY_API_SECRET")
-#     ])
-    
-#     if use_cloudinary:
-#         try:
-#             import cloudinary
-#             import cloudinary.uploader
-#             cloudinary.config(
-#                 cloud_name=os.environ.get("CLOUDINARY_CLOUD_NAME"),
-#                 api_key=os.environ.get("CLOUDINARY_API_KEY"),
-#                 api_secret=os.environ.get("CLOUDINARY_API_SECRET")
-#             )
-#         except:
-#             use_cloudinary = False
-    
-#     customer = execute_query(c, "SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
-#     if not customer:
-#         flash("Customer not found.", "danger")
-#         return redirect(url_for("customers"))
-    
-#     if request.method == "POST":
-#         full_name = request.form.get("full_name", "").strip()
-#         id_number = request.form.get("id_number", "").strip()
-#         phone = request.form.get("phone", "").strip()
-#         email = request.form.get("email", "").strip()
-#         address = request.form.get("address", "").strip()
-#         verification_status = request.form.get("verification_status", "Pending")
-
-
-
-#         # ✅ Validate the formats
-#         is_valid, error_msg = validate_namibian_identity(phone, id_number)
-#         if not is_valid:
-#             flash(error_msg, "danger")
-#             conn.close()
-#             return redirect(url_for("edit_customer", customer_id=customer_id))
-
-
-
-#         if not full_name or not phone:
-#             flash("Name and phone are required.", "danger")
-#             return redirect(url_for("edit_customer", customer_id=customer_id))
-        
-#         id_photo = request.files.get("id_photo") if request.files else None
-#         customer_photo = request.files.get("customer_photo") if request.files else None
-
-
-#         # Get gender from form
-#         gender = request.form.get("gender", "").strip()
-
-#         execute_query(c, """
-#             UPDATE customers 
-#             SET full_name = ?, id_number = ?, phone = ?, email = ?, address = ?,
-#                 verification_status = ?, gender = ?
-#             WHERE id = ?
-#         """, (full_name, id_number, phone, email, address, verification_status, gender, customer_id))
-
-#         # execute_query(c, """
-#         #     UPDATE customers 
-#         #     SET full_name = ?, id_number = ?, phone = ?, email = ?, address = ?,
-#         #         verification_status = ?
-#         #     WHERE id = ?
-#         # """, (full_name, id_number, phone, email, address, verification_status, customer_id))
-        
-#         # Handle document uploads with fallback
-#         from werkzeug.utils import secure_filename
-#         UPLOAD_FOLDER = os.path.join(BASE, 'static', 'uploads')
-#         os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-        
-#         if id_photo and id_photo.filename:
-#             uploaded = False
-#             if use_cloudinary:
-#                 try:
-#                     upload_result = cloudinary.uploader.upload(id_photo)
-#                     file_url = upload_result['secure_url']
-#                     execute_query(c, """
-#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
-#                         VALUES (?, 'id_copy', ?)
-#                     """, (customer_id, file_url))
-#                     uploaded = True
-#                 except Exception as e:
-#                     print(f"❌ Cloudinary upload failed: {e}")
-            
-#             if not uploaded:
-#                 try:
-#                     filename = f"id_{customer_id}_{secure_filename(id_photo.filename)}"
-#                     id_photo.save(os.path.join(UPLOAD_FOLDER, filename))
-#                     execute_query(c, """
-#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
-#                         VALUES (?, 'id_copy', ?)
-#                     """, (customer_id, f"uploads/{filename}"))
-#                 except Exception as e:
-#                     flash("Error uploading ID document.", "danger")
-#                     return redirect(url_for("edit_customer", customer_id=customer_id))
-        
-#         if customer_photo and customer_photo.filename:
-#             uploaded = False
-#             if use_cloudinary:
-#                 try:
-#                     upload_result = cloudinary.uploader.upload(customer_photo)
-#                     file_url = upload_result['secure_url']
-#                     execute_query(c, """
-#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
-#                         VALUES (?, 'customer_photo', ?)
-#                     """, (customer_id, file_url))
-#                     uploaded = True
-#                 except Exception as e:
-#                     print(f"❌ Cloudinary upload failed: {e}")
-            
-#             if not uploaded:
-#                 try:
-#                     filename = f"photo_{customer_id}_{secure_filename(customer_photo.filename)}"
-#                     customer_photo.save(os.path.join(UPLOAD_FOLDER, filename))
-#                     execute_query(c, """
-#                         INSERT INTO customer_documents (customer_id, document_type, file_path)
-#                         VALUES (?, 'customer_photo', ?)
-#                     """, (customer_id, f"uploads/{filename}"))
-#                 except Exception as e:
-#                     flash("Error uploading customer photo.", "danger")
-#                     return redirect(url_for("edit_customer", customer_id=customer_id))
-        
-#         conn.commit()
-
-#         conn.close()
-        
-#         flash(f"Customer '{full_name}' updated successfully!", "success")
-
-#         log_audit(
-#             action="customer_edit",
-#             entity_type="customer",
-#             entity_id=customer_id,
-#             details=f"Edited customer '{full_name}'"
-#         )        
-#         return redirect(url_for("customers"))
-    
-    
-#     documents = execute_query(c, """
-#         SELECT * FROM customer_documents 
-#         WHERE customer_id = ? 
-#         ORDER BY uploaded_at DESC
-#     """, (customer_id,)).fetchall()
-    
-#     for doc in documents:
-#         if doc.get("uploaded_at"):
-#             if isinstance(doc["uploaded_at"], datetime):
-#                 doc["uploaded_at"] = doc["uploaded_at"].strftime("%Y-%m-%d %H:%M")
-    
-#     conn.close()
-    
-#     return render_template(
-#         "edit_customer.html",
-#         title="Edit Customer",
-#         customer=customer,
-#         documents=documents
-#     )
 
 @app.route("/customers/<int:customer_id>/edit", methods=["GET", "POST"])
 @login_required
@@ -12315,64 +11746,6 @@ def delete_bicycle(bicycle_id):
 
 
 
-# @app.route("/announcements")
-# @login_required
-# def announcements():
-#     """View all announcements."""
-#     from datetime import datetime
-    
-#     conn = db()
-#     c = conn.cursor()
-    
-#     user_id = session["user_id"]
-#     user_role = session.get("role", "staff")
-    
-#     # Get all active announcements with read status
-#     announcements_list = execute_query(c, """
-#         SELECT 
-#             a.*,
-#             CASE WHEN ar.id IS NOT NULL THEN 1 ELSE 0 END AS is_read
-#         FROM announcements a
-#         LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.user_id = ?
-#         WHERE a.is_active = 1
-#         ORDER BY a.is_pinned DESC, a.priority DESC, a.created_at DESC
-#     """, (user_id,)).fetchall()
-    
-#     # ✅ FIX: Format datetime for each announcement (PostgreSQL returns datetime objects)
-#     for announcement in announcements_list:
-#         if announcement.get("created_at"):
-#             if isinstance(announcement["created_at"], datetime):
-#                 announcement["created_at"] = announcement["created_at"].strftime("%Y-%m-%d %H:%M:%S")
-#             elif isinstance(announcement["created_at"], str):
-#                 announcement["created_at"] = announcement["created_at"]
-        
-#         if announcement.get("updated_at"):
-#             if isinstance(announcement["updated_at"], datetime):
-#                 announcement["updated_at"] = announcement["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
-#             elif isinstance(announcement["updated_at"], str):
-#                 announcement["updated_at"] = announcement["updated_at"]
-    
-#     # ✅ FIX: Get unread count as integer
-#     unread_result = execute_query(c, """
-#         SELECT COUNT(*) as count FROM announcements a
-#         LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.user_id = ?
-#         WHERE a.is_active = 1 AND ar.id IS NULL
-#     """, (user_id,)).fetchone()
-    
-#     unread_count = unread_result['count'] if isinstance(unread_result, dict) else unread_result[0] if unread_result else 0
-
-
-
-#     conn.close()
-    
-#     return render_template(
-#         "announcements.html",
-#         title="Announcements",
-#         announcements=announcements_list,
-#         unread_count=unread_count,
-#         user_role=user_role
-#     )
-
 
 @app.route("/announcements")
 @login_required
@@ -12413,15 +11786,7 @@ def announcements():
     
     # # Format datetime for each announcement
     for announcement in announcements_list:
-    #     if announcement.get("created_at"):
-    #         if isinstance(announcement["created_at"], datetime):
-    #             announcement["created_at"] = announcement["created_at"].strftime("%Y-%m-%d %H:%M:%S")
-        
-    #     if announcement.get("updated_at"):
-    #         if isinstance(announcement["updated_at"], datetime):
-    #             announcement["updated_at"] = announcement["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
-    
-
+ 
 
             if announcement.get("created_at") and isinstance(announcement["created_at"], datetime):
                 announcement["created_at"] = (announcement["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M:%S")
@@ -12451,74 +11816,6 @@ def announcements():
     )
 
 
-# @app.route("/announcements/<int:announcement_id>")
-# @login_required
-# def view_announcement(announcement_id):
-#     """View a single announcement with comments."""
-#     from datetime import datetime
-    
-#     conn = db()
-#     c = conn.cursor()
-    
-#     is_postgres = os.environ.get("DATABASE_URL") is not None
-    
-#     user_id = session["user_id"]
-    
-#     # Get announcement
-#     announcement = execute_query(c, """
-#         SELECT * FROM announcements WHERE id = ? AND is_active = 1
-#     """, (announcement_id,)).fetchone()
-    
-#     if not announcement:
-#         flash("Announcement not found.", "danger")
-#         return redirect(url_for("announcements"))
-    
-#     # ✅ FIX: Format datetime for announcement
-#     if announcement.get("created_at"):
-#         if isinstance(announcement["created_at"], datetime):
-#             announcement["created_at"] = announcement["created_at"].strftime("%Y-%m-%d %H:%M:%S")
-    
-#     if announcement.get("updated_at"):
-#         if isinstance(announcement["updated_at"], datetime):
-#             announcement["updated_at"] = announcement["updated_at"].strftime("%Y-%m-%d %H:%M:%S")
-    
-#     # ✅ FIX: Mark as read - handle PostgreSQL vs SQLite
-#     if is_postgres:
-#         # PostgreSQL syntax
-#         execute_query(c, """
-#             INSERT INTO announcement_reads (announcement_id, user_id)
-#             VALUES (%s, %s)
-#             ON CONFLICT (announcement_id, user_id) DO NOTHING
-#         """, (announcement_id, user_id))
-#     else:
-#         # SQLite syntax
-#         execute_query(c, """
-#             INSERT OR IGNORE INTO announcement_reads (announcement_id, user_id)
-#             VALUES (?, ?)
-#         """, (announcement_id, user_id))
-    
-#     # Get comments
-#     comments = execute_query(c, """
-#         SELECT * FROM announcement_comments 
-#         WHERE announcement_id = ? 
-#         ORDER BY created_at ASC
-#     """, (announcement_id,)).fetchall()
-    
-#     # ✅ FIX: Format datetime for comments
-#     for comment in comments:
-#         if comment.get("created_at"):
-#             if isinstance(comment["created_at"], datetime):
-#                 comment["created_at"] = comment["created_at"].strftime("%Y-%m-%d %H:%M:%S")
-    
-#     conn.commit()
-#     conn.close()
-    
-#     return render_template(
-#         "view_announcement.html",
-#         title=announcement["title"],
-#         announcement=announcement,
-#         comments=comments
-#     )
 
 @app.route("/announcements/<int:announcement_id>")
 @login_required
@@ -12656,6 +11953,45 @@ def upload_general_voice_note():
 
     # ✅ Redirect back to the page that submitted the form (dashboard OR start_rental)
     return redirect(request.referrer or url_for("dashboard"))
+
+
+@app.route("/support/<int:msg_id>/delete", methods=["POST"])
+@login_required
+def delete_support_message(msg_id):
+    """Admin deletes a single customer-support voice message (+ its file)."""
+    if session.get("role") != "admin":
+        flash("Access denied. Admins only.", "danger")
+        return redirect(url_for("dashboard"))
+
+    conn = db(); c = conn.cursor()
+    msg = execute_query(c, "SELECT file_path FROM customer_support WHERE id = ?", (msg_id,)).fetchone()
+
+    if msg:
+        # Delete physical file if stored locally (not Cloudinary)
+        if msg["file_path"] and not msg["file_path"].startswith("http"):
+            import os
+            fp = os.path.join(BASE, 'static', msg["file_path"])
+            try:
+                if os.path.exists(fp):
+                    os.remove(fp)
+            except Exception as e:
+                print(f"❌ Could not delete support file: {e}")
+
+        execute_query(c, "DELETE FROM customer_support WHERE id = ?", (msg_id,))
+        conn.commit()
+        log_audit(
+            action="support_message_delete",
+            entity_type="customer_support",
+            entity_id=msg_id,
+            details=f"Admin deleted support voice message #{msg_id}"
+        )
+    conn.close()
+
+    flash("Support message deleted.", "success")
+
+    next_url = request.form.get("next", "")
+    allowed = [url_for("dashboard"), url_for("support"), url_for("my_support")]
+    return redirect(next_url if next_url in allowed else url_for("dashboard"))
 
 
 @app.route("/voice-notes/<int:voice_id>/delete", methods=["POST"])
@@ -13094,18 +12430,20 @@ def analytics_dashboard():
     # REVENUE TRENDS
     # =============================================
     
-    if is_postgres:
-        # PostgreSQL syntax
-        daily_revenue = execute_query(c, """
-            SELECT 
-                DATE(payment_date) AS date,
-                COALESCE(SUM(amount), 0) AS revenue,
-                COUNT(*) AS transactions
-            FROM rental_payments
-            WHERE DATE(payment_date) >= CURRENT_DATE - INTERVAL '30 days'
-            GROUP BY DATE(payment_date)
-            ORDER BY DATE(payment_date) ASC
-        """).fetchall()
+    if period == "daily":
+        revenue = execute_query(c, """
+            SELECT
+                DATE(rp.payment_date) AS period_label,
+                COUNT(*) AS transactions,
+                COALESCE(SUM(rp.amount), 0) AS revenue,
+                COALESCE(STRING_AGG(DISTINCT c.full_name, ', '), '—') AS customers
+            FROM rental_payments rp
+            LEFT JOIN daily_rentals dr ON dr.id = rp.daily_rental_id
+            LEFT JOIN customers c ON c.id = dr.customer_id
+            WHERE DATE(rp.payment_date) = %s
+            GROUP BY DATE(rp.payment_date)
+        """, (date_filter,)).fetchall()
+        period_label = "Daily"
         
         weekly_revenue = execute_query(c, """
             SELECT 
@@ -13151,16 +12489,18 @@ def analytics_dashboard():
         """).fetchall()
     else:
         # SQLite syntax
-        daily_revenue = execute_query(c, """
-            SELECT 
-                date(payment_date) AS date,
-                COALESCE(SUM(amount), 0) AS revenue,
-                COUNT(*) AS transactions
-            FROM rental_payments
-            WHERE date(payment_date) >= date('now', '-30 days')
-            GROUP BY date(payment_date)
-            ORDER BY date(payment_date) ASC
-        """).fetchall()
+        revenue = execute_query(c, """
+            SELECT
+                date(rp.payment_date) AS period_label,
+                COUNT(*) AS transactions,
+                COALESCE(SUM(rp.amount), 0) AS revenue,
+                COALESCE(GROUP_CONCAT(DISTINCT c.full_name, ', '), '—') AS customers
+            FROM rental_payments rp
+            LEFT JOIN daily_rentals dr ON dr.id = rp.daily_rental_id
+            LEFT JOIN customers c ON c.id = dr.customer_id
+            WHERE date(rp.payment_date) = ?
+            GROUP BY date(rp.payment_date)
+        """, (date_filter,)).fetchall()
         
         weekly_revenue = execute_query(c, """
             SELECT 
@@ -13266,19 +12606,25 @@ def analytics_dashboard():
         LIMIT 10
     """).fetchall()
     
-    # =============================================
-    # PAYMENT ANALYTICS
-    # =============================================
-    
+
+
+
     payment_methods = execute_query(c, """
         SELECT 
             payment_method,
             COUNT(*) AS count,
-            COALESCE(SUM(amount), 0) AS total
+            COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) AS collected,
+            COALESCE(SUM(CASE WHEN amount < 0 THEN -amount ELSE 0 END), 0) AS refunded,
+            COALESCE(SUM(amount), 0) AS net
         FROM rental_payments
         GROUP BY payment_method
-        ORDER BY total DESC
+        ORDER BY collected DESC, net DESC
     """).fetchall()
+
+    # ✅ Correct denominators for the % column
+    total_collected = sum(p["collected"] for p in payment_methods)
+    total_refunded  = sum(p["refunded"]  for p in payment_methods)
+
     
     avg_duration = execute_query(c, """
         SELECT 
@@ -13314,7 +12660,25 @@ def analytics_dashboard():
             COALESCE(SUM(amount_discounted), 0) AS total_savings
         FROM discount_usage
     """).fetchone()
-    
+
+
+    # =============================================
+    # STAFF PERFORMANCE & LEADERBOARD
+    # =============================================
+    staff_performance = execute_query(c, """
+        SELECT 
+            u.id, u.full_name, u.role,
+            COUNT(r.id) AS rentals_count,
+            COALESCE(SUM(r.total_cost), 0) AS revenue_generated,
+            COALESCE(SUM((SELECT COUNT(*) FROM rental_items ri WHERE ri.rental_id = r.id)), 0) AS items_sold
+        FROM users u
+        LEFT JOIN daily_rentals r ON r.started_by_user_id = u.id
+        WHERE u.role != 'customer'
+        GROUP BY u.id, u.full_name, u.role
+        ORDER BY rentals_count DESC
+    """).fetchall()
+
+
     conn.close()
     
     # =============================================
@@ -13365,7 +12729,12 @@ def analytics_dashboard():
         revenue_by_day=revenue_by_day,
         maintenance_stats=maintenance_stats,
         discount_stats=discount_stats,
-        chart_data=chart_data
+        chart_data=chart_data,
+
+        total_collected=total_collected,
+        total_refunded=total_refunded,
+        staff_performance=staff_performance
+
     )
 
 
@@ -13654,7 +13023,43 @@ def bicycle_utilization():
     )
 
 
+@app.route("/staff/grant-reward", methods=["POST"])
+@login_required
+@admin_required
+def grant_staff_reward():
+    """Admin grants a reward to a staff member."""
+    staff_id = request.form.get("staff_id")
+    reward_type = request.form.get("reward_type") # e.g., 'Cash Bonus', 'Gift', 'Certificate'
+    amount = float(request.form.get("amount", 0))
+    reason = request.form.get("reason", "").strip()
 
+    if not reason:
+        flash("Please provide a reason for the reward.", "danger")
+        return redirect(request.referrer or url_for("analytics_dashboard"))
+
+    conn = db()
+    c = conn.cursor()
+    
+    # Get staff name for the log
+    staff = execute_query(c, "SELECT full_name FROM users WHERE id = ?", (staff_id,)).fetchone()
+    
+    execute_query(c, """
+        INSERT INTO staff_rewards (staff_id, reward_type, amount, reason, granted_by)
+        VALUES (?, ?, ?, ?, ?)
+    """, (staff_id, reward_type, amount, reason, session["user_id"]))
+    
+    conn.commit()
+    conn.close()
+
+    log_audit(
+        action="staff_reward_granted",
+        entity_type="user",
+        entity_id=staff_id,
+        details=f"Granted {reward_type} (N${amount}) to {staff['full_name']}. Reason: {reason}"
+    )
+
+    flash(f"🏆 Reward granted to {staff['full_name']}!", "success")
+    return redirect(url_for("analytics_dashboard"))
 
 
 # =============================================
@@ -14742,17 +14147,18 @@ def export_bicycles_csv():
 @login_required
 @admin_required
 def export_customers_csv():
-    """Export customer list to CSV."""
+    """Export customer master list to CSV (including Gender)."""
     conn = db()
     c = conn.cursor()
     
-    customers = execute_query(c,"""
+    customers = execute_query(c, """
         SELECT 
             c.full_name,
             c.phone,
             c.id_number,
             c.email,
             c.address,
+            c.gender,
             c.verification_status,
             (SELECT COUNT(*) FROM daily_rentals WHERE customer_id = c.id) AS rentals,
             COALESCE(lp.points, 0) AS points,
@@ -14766,7 +14172,8 @@ def export_customers_csv():
     si = StringIO()
     writer = csv.writer(si)
     
-    writer.writerow(['Name', 'Phone', 'ID Number', 'Email', 'Address', 
+    # ✅ Added 'Gender' to the header
+    writer.writerow(['Name', 'Phone', 'ID Number', 'Email', 'Address', 'Gender', 
                      'Verification Status', 'Total Rentals', 'Loyalty Points', 'Tier'])
     
     for c in customers:
@@ -14776,6 +14183,7 @@ def export_customers_csv():
             c['id_number'] or '',
             c['email'] or '',
             c['address'] or '',
+            c['gender'] or '',  # ✅ Added gender data
             c['verification_status'] or 'Pending',
             c['rentals'] or 0,
             c['points'],
@@ -14838,7 +14246,137 @@ def export_maintenance_csv():
     return response
 
 
+@app.route("/export/users/csv")
+@login_required
+@admin_required
+def export_users_csv():
+    """Export system users to CSV."""
+    conn = db()
+    c = conn.cursor()
+    
+    users_list = execute_query(c, """
+        SELECT u.username, u.full_name, u.role, u.email, u.phone,
+               s.name AS station_name, u.created_at,
+               CASE WHEN la.locked_until > CURRENT_TIMESTAMP THEN 'Locked' ELSE 'Active' END AS account_status
+        FROM users u
+        LEFT JOIN branches s ON s.id = u.branch_id
+        LEFT JOIN login_attempts la ON la.user_id = u.id
+        WHERE u.role != 'customer'
+        ORDER BY u.role, u.username
+    """).fetchall()
+    conn.close()
+    
+    si = StringIO()
+    writer = csv.writer(si)
+    writer.writerow(['Username', 'Full Name', 'Role', 'Email', 'Phone', 'Station', 'Created At', 'Status'])
+    
+    for u in users_list:
+        created = u['created_at'].strftime("%Y-%m-%d") if isinstance(u['created_at'], datetime) else str(u['created_at'])
+        writer.writerow([u['username'], u['full_name'] or '', u['role'], u['email'] or '', u['phone'] or '', u['station_name'] or '', created, u['account_status']])
+    
+    response = make_response(si.getvalue())
+    response.headers['Content-Type'] = 'text/csv'
+    response.headers['Content-Disposition'] = f'attachment; filename=users_{datetime.now().strftime("%Y%m%d")}.csv'
+    return response
 
+
+@app.route("/export/workers/csv")
+@login_required
+@manager_required
+def export_workers_csv():
+    """Export worker details to CSV."""
+    conn = db()
+    c = conn.cursor()
+    
+    workers_list = execute_query(c, """
+        SELECT u.full_name, u.username, u.role, u.job_title, u.specialty, 
+               u.phone, u.email, s.name AS station_name, u.hire_date
+        FROM users u
+        LEFT JOIN branches s ON s.id = u.branch_id
+        WHERE u.role != 'customer'
+        ORDER BY u.role, u.full_name
+    """).fetchall()
+    conn.close()
+    
+    si = StringIO()
+    writer = csv.writer(si)
+    writer.writerow(['Full Name', 'Username', 'Role', 'Job Title', 'Specialty', 'Phone', 'Email', 'Station', 'Hire Date'])
+    
+    for w in workers_list:
+        hire_date = w['hire_date'].strftime("%Y-%m-%d") if isinstance(w['hire_date'], datetime) else (str(w['hire_date']) if w['hire_date'] else '')
+        writer.writerow([w['full_name'] or '', w['username'], w['role'], w['job_title'] or '', w['specialty'] or '', w['phone'] or '', w['email'] or '', w['station_name'] or '', hire_date])
+    
+    response = make_response(si.getvalue())
+    response.headers['Content-Type'] = 'text/csv'
+    response.headers['Content-Disposition'] = f'attachment; filename=workers_{datetime.now().strftime("%Y%m%d")}.csv'
+    return response
+
+
+@app.route("/export/pending-registrations/csv")
+@login_required
+@admin_required
+def export_pending_registrations_csv():
+    """Export registration history (approved/rejected/pending) to CSV."""
+    conn = db()
+    c = conn.cursor()
+    
+    regs = execute_query(c, """
+        SELECT full_name, phone, id_number, email, gender, address, 
+               status, reviewed_by, reviewed_at, rejection_reason
+        FROM pending_registrations
+        ORDER BY reviewed_at DESC, id DESC
+    """).fetchall()
+    conn.close()
+    
+    si = StringIO()
+    writer = csv.writer(si)
+    writer.writerow(['Full Name', 'Phone', 'ID Number', 'Email', 'Gender', 'Address', 'Status', 'Reviewed By (User ID)', 'Reviewed At', 'Rejection Reason'])
+    
+    for r in regs:
+        reviewed_at = r['reviewed_at'].strftime("%Y-%m-%d %H:%M") if isinstance(r['reviewed_at'], datetime) else (str(r['reviewed_at']) if r['reviewed_at'] else '')
+        writer.writerow([r['full_name'], r['phone'], r['id_number'] or '', r['email'] or '', r['gender'] or '', r['address'] or '', r['status'], r['reviewed_by'] or '', reviewed_at, r['rejection_reason'] or ''])
+    
+    response = make_response(si.getvalue())
+    response.headers['Content-Type'] = 'text/csv'
+    response.headers['Content-Disposition'] = f'attachment; filename=pending_registrations_{datetime.now().strftime("%Y%m%d")}.csv'
+    return response
+
+
+@app.route("/export/damages/csv")
+@login_required
+@manager_required
+def export_damages_csv():
+    """Export damage claims to CSV for financial reconciliation."""
+    conn = db()
+    c = conn.cursor()
+    
+    damages = execute_query(c, """
+        SELECT d.id, c.full_name AS customer, b.bike_code, d.description, 
+               d.estimated_cost, d.actual_cost, d.status, d.reported_at
+        FROM damage_claims d
+        JOIN customers c ON c.id = d.customer_id
+        JOIN bicycles b ON b.id = d.bicycle_id
+        ORDER BY d.reported_at DESC
+    """).fetchall()
+    conn.close()
+    
+    si = StringIO()
+    writer = csv.writer(si)
+    writer.writerow(['Claim ID', 'Customer', 'Bike Code', 'Description', 'Estimated Cost (N$)', 'Actual Cost (N$)', 'Status', 'Reported At'])
+    
+    for d in damages:
+        reported = d['reported_at'].strftime("%Y-%m-%d %H:%M") if isinstance(d['reported_at'], datetime) else (str(d['reported_at']) if d['reported_at'] else '')
+        writer.writerow([
+            d['id'], d['customer'], d['bike_code'], d['description'],
+            f"{d['estimated_cost']:.2f}" if d['estimated_cost'] else '0.00',
+            f"{d['actual_cost']:.2f}" if d['actual_cost'] else '0.00',
+            d['status'], reported
+        ])
+    
+    response = make_response(si.getvalue())
+    response.headers['Content-Type'] = 'text/csv'
+    response.headers['Content-Disposition'] = f'attachment; filename=damages_{datetime.now().strftime("%Y%m%d")}.csv'
+    return response
 
 
 

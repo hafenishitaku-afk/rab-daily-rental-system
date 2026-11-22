@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>🎧 Need Help?</h1>
+<p class="sub">Record a voice note and our team will reply as soon as possible.</p>
+
+<div class="card">
+  {% for m in messages %}
+  <div style="margin-bottom:10px; padding:10px; border-radius:8px;
+              background:{% if m.sender_role=='customer' %}#fdeceb{% else %}#e7f6ec{% endif %};">
+    <div style="font-size:12px; font-weight:bold; color:#0d1f46;">
+      {% if m.sender_role=='customer' %}You{% else %}RAB Team — {{ m.staff_name }}{% endif %}
+      <span style="color:#667085; font-weight:normal;">({{ m.created_at }})</span>
+    </div>
+    {% if m.file_path.startswith('http') %}
+      <audio controls src="{{ m.file_path }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+    {% else %}
+      <audio controls src="{{ url_for('static', filename=m.file_path) }}" style="width:100%; height:35px; margin-top:5px;"></audio>
+    {% endif %}
+  </div>
+  {% else %}
+    <p style="color:#667085;">You haven't sent any messages yet. Record one below!</p>
+  {% endfor %}
+</div>
+
+<div class="card" style="text-align:center;">
+  <form method="post" action="{{ url_for('my_support') }}" enctype="multipart/form-data" class="voice-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="button" class="record-btn" style="background:#0d1f46;color:#fff;border:none;padding:14px 24px;border-radius:8px;cursor:pointer;font-weight:bold;font-size:16px;">🎙️ Hold to Record</button>
+    <span class="record-status" style="margin-left:10px;font-size:13px;color:#667085;"></span>
+    <input type="file" name="audio_data" class="audio-input" style="display:none;">
+  </form>
+</div>
+
+<div class="actions"><a href="{{ url_for('customer_portal') }}" class="btn">← Back to My Account</a></div>
+{% endblock %}

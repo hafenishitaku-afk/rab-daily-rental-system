@@ -57,11 +57,22 @@
                 Username
                 <input type="text" name="username" required>
             </label>
-            <label style="display:block;text-align:left;margin-top:12px;">
+            <!-- <label style="display:block;text-align:left;margin-top:12px;">
                 Password
                 <input type="password" name="password" required>
-            </label>
+            </label> -->
+  
             
+            <label style="display:block;text-align:left;margin-top:12px;">
+                Password
+                <div style="position: relative;">
+                    <input type="password" name="password" id="staffPassword" required style="width:100%; padding:10px; padding-right:40px; box-sizing:border-box;">
+                    <span onclick="togglePassword('staffPassword', this)" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 18px; color: #667085; user-select: none;">
+                        👁️
+                    </span>
+                </div>
+            </label>
+
             <button class="btn yellow" style="width:100%;margin-top:20px;padding:12px;font-size:16px;">
                 Sign in
             </button>
@@ -84,5 +95,21 @@
             {% endfor %}
         {% endwith %}
     </div>
+
+<script>
+function togglePassword(inputId, iconElement) {
+    const input = document.getElementById(inputId);
+    if (input.type === "password") {
+        input.type = "text";
+        iconElement.innerHTML = "🙈"; // Change icon to closed eyes
+        iconElement.style.color = "#0d1f46"; // Highlight color
+    } else {
+        input.type = "password";
+        iconElement.innerHTML = "👁️"; // Change icon back to open eyes
+        iconElement.style.color = "#667085"; // Default color
+    }
+}
+</script>
+
 </body>
 </html>

@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:20px;">
+    <div>
+        <h1 style="margin:0;">🛣️ Road Safety & Cycling Rules</h1>
+        <p class="sub" style="margin:5px 0 0 0;">How to ride safely on roads shared with motor vehicles.</p>
+    </div>
+    <button id="startQuizBtn" class="btn yellow" style="font-size:16px; padding:10px 20px;">🎮 Take the Safety Quiz</button>
+</div>
+
+<!-- ✅ QUIZ GAME AREA -->
+<div id="quizArea" class="card" style="display:none; background:#f8f9fa; border-left:5px solid #6f42c1; margin-bottom:30px;">
+    <div style="display:flex; justify-content:space-between; margin-bottom:15px; font-weight:bold; font-size:18px;">
+        <span>Score: <span id="scoreDisplay" style="color:#16834b;">0</span></span>
+        <span>Question: <span id="qNumDisplay">1</span>/5</span>
+    </div>
+    <h3 id="quizQuestion" style="text-align:center; margin:20px 0; color:#0d1f46;"></h3>
+    <div id="quizOptions" style="display:grid; grid-template-columns:1fr; gap:10px;"></div>
+    <div id="quizFeedback" style="text-align:center; margin-top:15px; font-weight:bold; font-size:16px; min-height:24px;"></div>
+</div>
+
+<!-- ✅ FINAL SCORE SCREEN -->
+<div id="quizResult" class="card" style="display:none; text-align:center; background:#e7f6ec; border-left:5px solid #16834b; margin-bottom:30px;">
+    <h2 id="resultTitle">Quiz Complete!</h2>
+    <p style="font-size:24px; margin:20px 0;">You scored <b id="finalScore" style="color:#6f42c1;">0</b> out of 5</p>
+    <p id="resultMessage" style="color:#667085; margin-bottom:20px;"></p>
+    <button onclick="startQuiz()" class="btn yellow">🔄 Play Again</button>
+    <button onclick="closeQuiz()" class="btn">Close</button>
+</div>
+
+<!-- ✅ THE RULES -->
+<div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:20px; margin-bottom:30px;">
+    <div class="card">
+        <h3>🪖 1. Always Wear a Helmet</h3>
+        <p>Your helmet is your most important safety gear. Ensure it fits snugly and the strap is buckled before you start riding.</p>
+    </div>
+    <div class="card">
+        <h3>🚗 2. Ride WITH Traffic</h3>
+        <p>Always ride on the left side of the road, moving in the same direction as cars. Never ride against traffic.</p>
+    </div>
+    <div class="card">
+        <h3>✋ 3. Use Hand Signals</h3>
+        <p>Drivers can't read your mind. Always signal your turns and stops clearly using your arms (see diagram below).</p>
+    </div>
+    <div class="card">
+        <h3>🚦 4. Obey Traffic Lights</h3>
+        <p>Bicycles are vehicles too. Stop at red lights and stop signs. Never run a red light, even if the road looks empty.</p>
+    </div>
+    <div class="card">
+        <h3>🚪 5. Watch for Car Doors</h3>
+        <p>When riding past parked cars, leave at least 1 meter of space. A driver might suddenly open their door into your path.</p>
+    </div>
+    <div class="card">
+        <h3>🎧 6. No Headphones</h3>
+        <p>Keep your ears open. You need to hear cars approaching, horns honking, or other cyclists warning you of danger.</p>
+    </div>
+</div>
+
+<!-- ✅ HAND SIGNALS DIAGRAM -->
+<div class="card" style="text-align:center; margin-bottom:30px;">
+    <h2>✋ Essential Hand Signals</h2>
+    <p style="color:#667085; margin-bottom:20px;">Extend your arm clearly so drivers behind you can see it.</p>
+    
+    <div style="display:flex; justify-content:space-around; flex-wrap:wrap; gap:20px;">
+        <div style="flex:1; min-width:200px; padding:20px; background:#f8f9fa; border-radius:10px;">
+            <div style="font-size:60px;">👈</div>
+            <h4 style="color:#0d1f46;">Left Turn</h4>
+            <p>Extend your left arm straight out.</p>
+        </div>
+        <div style="flex:1; min-width:200px; padding:20px; background:#f8f9fa; border-radius:10px;">
+            <div style="font-size:60px;">👆</div>
+            <h4 style="color:#0d1f46;">Right Turn</h4>
+            <p>Extend your left arm out and bend your elbow upward (L-shape).</p>
+        </div>
+        <div style="flex:1; min-width:200px; padding:20px; background:#f8f9fa; border-radius:10px;">
+            <div style="font-size:60px;">👇</div>
+            <h4 style="color:#0d1f46;">Stopping</h4>
+            <p>Extend your left arm out and bend your elbow downward.</p>
+        </div>
+    </div>
+</div>
+
+<div class="actions">
+    <a href="{{ url_for('dashboard') }}" class="btn">← Back to Dashboard</a>
+</div>
+
+<!-- ✅ QUIZ JAVASCRIPT -->
+<script>
+const roadQuestions = [
+    {
+        q: "Which side of the road should you ride on?",
+        options: ["Against traffic (Right side)", "With traffic (Left side)", "In the middle of the road", "On the sidewalk"],
+        answer: 1
+    },
+    {
+        q: "What should you do if a car is parked on the side of the road?",
+        options: ["Ride very close to it to save space", "Honk your horn loudly", "Leave at least 1 meter of space in case a door opens", "Stop and wait for the car to move"],
+        answer: 2
+    },
+    {
+        q: "How do you signal a RIGHT turn with your hand?",
+        options: ["Point your right foot", "Left arm straight out", "Left arm bent upward in an L-shape", "Wave both hands"],
+        answer: 2
+    },
+    {
+        q: "True or False: Bicycles must stop at red traffic lights.",
+        options: ["True", "False, bikes can go through if it's safe", "Only if a police officer is watching", "False, bikes are not vehicles"],
+        answer: 0
+    },
+    {
+        q: "Why shouldn't you wear headphones while riding?",
+        options: ["It's against the law", "You need to hear cars and hazards approaching", "It drains your phone battery", "It makes you look unprofessional"],
+        answer: 1
+    }
+];
+
+let currentQ = 0;
+let score = 0;
+let isAnswering = false;
+
+const quizArea = document.getElementById('quizArea');
+const quizResult = document.getElementById('quizResult');
+const startBtn = document.getElementById('startQuizBtn');
+
+startBtn.addEventListener('click', startQuiz);
+
+function startQuiz() {
+    quizArea.style.display = 'block';
+    quizResult.style.display = 'none';
+    startBtn.style.display = 'none';
+    score = 0;
+    currentQ = 0;
+    document.getElementById('scoreDisplay').innerText = score;
+    loadQuestion();
+}
+
+function closeQuiz() {
+    quizArea.style.display = 'none';
+    quizResult.style.display = 'none';
+    startBtn.style.display = 'inline-block';
+}
+
+function loadQuestion() {
+    if (currentQ >= roadQuestions.length) {
+        endGame();
+        return;
+    }
+    isAnswering = false;
+    document.getElementById('qNumDisplay').innerText = currentQ + 1;
+    document.getElementById('quizFeedback').innerText = "";
+    document.getElementById('quizQuestion').innerText = roadQuestions[currentQ].q;
+    
+    const optionsDiv = document.getElementById('quizOptions');
+    optionsDiv.innerHTML = '';
+    
+    roadQuestions[currentQ].options.forEach((opt, index) => {
+        const btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.style.cssText = 'padding:15px; font-size:16px; background:white; color:#0d1f46; border:2px solid #e4e7ec; text-align:left;';
+        btn.innerText = opt;
+        btn.onclick = () => checkAnswer(index, btn);
+        optionsDiv.appendChild(btn);
+    });
+}
+
+function checkAnswer(selectedIndex, btnElement) {
+    if (isAnswering) return;
+    isAnswering = true;
+    
+    const correctIndex = roadQuestions[currentQ].answer;
+    const feedback = document.getElementById('quizFeedback');
+    
+    if (selectedIndex === correctIndex) {
+        score++;
+        document.getElementById('scoreDisplay').innerText = score;
+        btnElement.style.background = '#16834b';
+        btnElement.style.color = 'white';
+        feedback.innerText = "✅ Correct!";
+        feedback.style.color = '#16834b';
+    } else {
+        btnElement.style.background = '#dc3545';
+        btnElement.style.color = 'white';
+        feedback.innerText = `❌ Wrong! The correct answer was: ${roadQuestions[currentQ].options[correctIndex]}`;
+        feedback.style.color = '#dc3545';
+    }
+    
+    currentQ++;
+    setTimeout(loadQuestion, 2000);
+}
+
+function endGame() {
+    quizArea.style.display = 'none';
+    quizResult.style.display = 'block';
+    document.getElementById('finalScore').innerText = score;
+    startBtn.style.display = 'inline-block';
+    
+    const msg = document.getElementById('resultMessage');
+    const title = document.getElementById('resultTitle');
+    
+    if (score === 5) {
+        title.innerText = "🏆 Road Safety Expert!";
+        msg.innerText = "Perfect score! You are ready to ride safely.";
+    } else if (score >= 3) {
+        title.innerText = "👍 Good Job!";
+        msg.innerText = "You know the basics, but review the rules above to be safer.";
+    } else {
+        title.innerText = "⚠️ Please Read the Rules";
+        msg.innerText = "It's important to know these rules before renting a bike. Please read the guide and try again.";
+    }
+}
+</script>
+
+{% endblock %}

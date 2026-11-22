@@ -78,6 +78,7 @@
                 <a href="{{ url_for('dashboard') }}" style="color:#ffe500;">Dashboard</a>
                 <a href="{{ url_for('start_rental') }}" style="color:#ffe500;">Start Rental</a>
                 <a href="{{ url_for('customers') }}" style="color:#ffe500;">Customers</a>
+                <a href="{{ url_for('support') }}" style="color:#ffe500;">💬 Support{% if open_support %} ({{ open_support }}){% endif %}</a>
                 <a href="{{ url_for('bicycles') }}" style="color:#ffe500;">Bicycles</a>
                 <a href="{{ url_for('rental_history') }}" style="color:#ffe500;">Rentals</a>
                 <a href="{{ url_for('payment_history') }}" style="color:#ffe500;">💸 Payments</a>
@@ -85,7 +86,8 @@
                 <a href="{{ url_for('reminder_logs') }}" style="color:#ffe500;">🔔 Reminders</a>
                 <a href="{{ url_for('pending_registrations') }}" style="color:#ffe500;">📝 Pending Regs</a>
                 <a href="{{ url_for('appointments') }}" style="color:#ffe500;">📅 Appointments</a>
-                <a href="{{ url_for('bike_parts') }}" style="color:#ffe500;">🚲 Learn Parts</a>
+                <a href="{{ url_for('road_safety') }}" style="color:#ffe500;">🛣️ Road Safety</a>
+                
                 <!-- Reports & Analytics (Manager+) -->
                 {% if session.role == 'admin' or session.role == 'manager' %}
                 <a href="{{ url_for('analytics_dashboard') }}" style="color:#ffe500;">📊 Analytics</a>
@@ -139,11 +141,14 @@
             <!-- ✅ CUSTOMER ONLY -->
             {% if session.role == 'customer' %}
                 <a href="{{ url_for('customer_portal') }}" style="color:#ffe500;font-weight:bold;">👤 My Account</a>
+                <a href="{{ url_for('my_support') }}" style="color:#ffe500;">🎧 Support</a>
                 <a href="{{ url_for('customer_rentals') }}" style="color:#ffe500;">📋 My Rentals</a>
+                <a href="{{ url_for('road_safety') }}" style="color:#ffe500;">🛣️ Road Safety</a>
             {% endif %}
             
             <!-- ✅ EVERYONE (Staff and Customers) -->
             <a href="{{ url_for('customer_stations') }}" style="color:#ffe500;">📍 Pickup Points</a>
+            <a href="{{ url_for('bike_parts') }}" style="color:#ffe500;">🚲 Learn Parts</a>
             
             {% if can_view_profile %}
             <a href="{{ url_for('profile') }}" style="color:#ffe500;">👤 Profile</a>
@@ -257,6 +262,122 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 });
 </script>
+
+
+{% if session.get('user_id') %}
+<div id="liveIndicator" style="position:fixed; bottom:14px; right:14px; background:rgba(13,31,70,0.92); color:#fff; padding:8px 14px; border-radius:20px; font-size:12px; z-index:9998; display:flex; align-items:center; gap:8px; box-shadow:0 4px 12px rgba(0,0,0,0.25);">
+    <span id="liveDot" style="width:8px; height:8px; border-radius:50%; background:#16834b; box-shadow:0 0 0 0 rgba(22,131,75,0.7); animation:livePulse 2s infinite;"></span>
+    <span id="liveText">LIVE · syncing…</span>
+</div>
+<style>
+@keyframes livePulse { 0%{box-shadow:0 0 0 0 rgba(22,131,75,0.7);} 70%{box-shadow:0 0 0 8px rgba(22,131,75,0);} 100%{box-shadow:0 0 0 0 rgba(22,131,75,0);} }
+.live-toast { position:fixed; top:16px; right:16px; background:#0d1f46; color:#fff; padding:12px 18px; border-radius:8px; font-size:14px; z-index:99999; box-shadow:0 6px 18px rgba(0,0,0,0.3); animation:toastIn .3s ease; }
+@keyframes toastIn { from{transform:translateX(120%); opacity:0;} to{transform:translateX(0); opacity:1;} }
+</style>
+
+<script>
+(function () {
+    const INTERVAL = 20000;            // poll every 20s
+    let lastStats = null;
+    let lastStationHash = null;
+    let timer = null;
+
+    // ---- helpers ----
+    function setText(key, val) {
+        document.querySelectorAll(`[data-live="${key}"]`).forEach(el => {
+            if (el.textContent.trim() !== String(val)) el.textContent = val;
+        });
+    }
+    function setBadge(key, val) {
+        document.querySelectorAll(`[data-live-badge="${key}"]`).forEach(el => {
+            if (val > 0) { el.style.display = ''; el.textContent = val; }
+            else { el.style.display = 'none'; }
+        });
+    }
+    function toast(msg) {
+        const t = document.createElement('div');
+        t.className = 'live-toast';
+        t.textContent = msg;
+        document.body.appendChild(t);
+        setTimeout(() => t.remove(), 4500);
+    }
+    function markSynced() {
+        const el = document.getElementById('liveText');
+        if (el) el.textContent = 'LIVE · synced ' + new Date().toLocaleTimeString();
+    }
+
+    // ---- patch the HTML feeds (voice + support) ----
+    async function refreshFeed() {
+        if (document.querySelector('[data-live-feed="voice"], [data-live-feed="support"]')) {
+            try {
+                const res = await fetch('/api/live-feed');
+                const html = await res.text();
+                const tmp = document.createElement('div');
+                tmp.innerHTML = html;
+                ['voice', 'support'].forEach(name => {
+                    const fresh = tmp.querySelector(`[data-live-feed="${name}"]`);
+                    const current = document.querySelector(`[data-live-feed="${name}"]`);
+                    if (fresh && current) {
+                        // Only swap if content actually changed (prevents audio restart)
+                        if (current.innerHTML.trim() !== fresh.innerHTML.trim()) {
+                            current.innerHTML = fresh.innerHTML;
+                        }
+                    }
+                });
+            } catch (e) { /* silent */ }
+        }
+    }
+
+    // ---- main poll ----
+    async function poll() {
+        // Pause when tab is hidden to save server load
+        if (document.hidden) return;
+        try {
+            const res = await fetch('/api/live-stats');
+            const s = await res.json();
+
+            // Patch counters
+            setText('pending_regs', s.pending_regs);
+            setText('unread_announcements', s.unread_announcements);
+            setText('active_rentals', s.active_rentals);
+            setText('available_bikes', s.available_bikes);
+            setText('open_support', s.open_support);
+            setBadge('pending_regs', s.pending_regs);
+            setBadge('open_support', s.open_support);
+
+            // Toast on *new* events only (compare to previous poll)
+            if (lastStats) {
+                if (s.pending_regs > lastStats.pending_regs) toast('📝 New online registration pending');
+                if (s.unread_announcements > lastStats.unread_announcements) toast('📢 New announcement');
+                if (s.open_support > lastStats.open_support) toast('🎧 New customer support message');
+                if (s.active_rentals > lastStats.active_rentals) toast('🚲 New rental started');
+            }
+            if (s.station_hash && lastStationHash && s.station_hash !== lastStationHash) {
+                toast('📍 A station status changed');
+            }
+
+            lastStats = s;
+            lastStationHash = s.station_hash;
+            markSynced();
+            await refreshFeed();
+        } catch (e) {
+            const el = document.getElementById('liveText');
+            if (el) el.textContent = '⚠️ offline · retrying…';
+        }
+    }
+
+    function start() { if (!timer) timer = setInterval(poll, INTERVAL); poll(); }
+    function stop() { clearInterval(timer); timer = null; }
+
+    // Resume instantly when user comes back to the tab
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) stop(); else start();
+    });
+
+    start();
+})();
+</script>
+{% endif %}
 
 </body>
 </html>
