@@ -314,7 +314,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const html = await res.text();
                 const tmp = document.createElement('div');
                 tmp.innerHTML = html;
-                ['voice', 'support'].forEach(name => {
+                ['voice', 'support', 'rentals'].forEach(name => {
                     const fresh = tmp.querySelector(`[data-live-feed="${name}"]`);
                     const current = document.querySelector(`[data-live-feed="${name}"]`);
                     if (fresh && current) {

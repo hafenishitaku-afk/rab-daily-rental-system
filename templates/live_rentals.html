@@ -1,0 +1,23 @@
+{% if rentals %}
+    {% for r in rentals %}
+    <tr>
+        <td><b>{{ r.id }}</b></td>
+        <td>{{ r.full_name }}</td>
+        <td>{{ r.bike_code }}</td>
+        <td>{{ r.pickup_station or '—' }}</td>
+        <td>{{ r.dropoff_station or '—' }}</td>
+        <td>{{ r.start_time }}</td>
+        <td><b style="color:#0d1f46;">{{ r.duration }}</b></td>
+        <td>N$ {{ "%.2f"|format(r.deposit_paid or 0) }}</td>
+        <td>
+            <a class="btn small" href="{{ url_for('end_rental', rental_id=r.id) }}" style="background:#dc3545; color:#fff;">End Rental</a>
+        </td>
+    </tr>
+    {% endfor %}
+{% else %}
+    <tr>
+        <td colspan="9" style="text-align:center; padding:20px; color:#667085;">
+            No active rentals right now.
+        </td>
+    </tr>
+{% endif %}

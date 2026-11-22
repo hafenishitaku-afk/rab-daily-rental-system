@@ -10351,7 +10351,63 @@ def live_feed():
                            recent_voice_notes=recent_voice_notes,
                            recent_support=recent_support)
 
+@app.route("/api/live-rentals")
+@login_required
+@staff_required
+def live_rentals():
+    """Returns the pre-rendered HTML for the Active Rentals table."""
+    from datetime import datetime, timedelta
+    
+    conn = db()
+    c = conn.cursor()
+    is_postgres = os.environ.get("DATABASE_URL") is not None
 
+    if is_postgres:
+        rentals = execute_query(c, """
+            SELECT 
+                r.id, c.full_name, b.bike_code, r.start_time, r.deposit_paid,
+                (SELECT name FROM branches WHERE id = r.start_station_id) AS pickup_station,
+                (SELECT name FROM branches WHERE id = r.expected_end_station_id) AS dropoff_station,
+                CONCAT(
+                    GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.start_time)) / 3600)), 'h ',
+                    GREATEST(0, FLOOR((EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.start_time)) % 3600) / 60)), 'm'
+                ) AS duration
+            FROM daily_rentals r
+            JOIN customers c ON c.id = r.customer_id
+            JOIN bicycles b ON b.id = r.bicycle_id
+            WHERE r.status = 'Active'
+            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id
+            ORDER BY r.start_time DESC
+        """).fetchall()
+    else:
+        rentals = execute_query(c, """
+            SELECT 
+                r.id, c.full_name, b.bike_code, r.start_time, r.deposit_paid,
+                (SELECT name FROM branches WHERE id = r.start_station_id) AS pickup_station,
+                (SELECT name FROM branches WHERE id = r.expected_end_station_id) AS dropoff_station,
+                CAST(MAX(0, (strftime('%s', 'now') - strftime('%s', r.start_time))) / 3600 AS INTEGER) || 'h ' ||
+                CAST(MAX(0, ((strftime('%s', 'now') - strftime('%s', r.start_time)) % 3600)) / 60 AS INTEGER) || 'm' AS duration
+            FROM daily_rentals r
+            JOIN customers c ON c.id = r.customer_id
+            JOIN bicycles b ON b.id = r.bicycle_id
+            WHERE r.status = 'Active'
+            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id
+            ORDER BY r.start_time DESC
+        """).fetchall()
+
+    # Format start_time to Namibia Local Time (+2 hours)
+    for rental in rentals:
+        if rental.get("start_time"):
+            if isinstance(rental["start_time"], datetime):
+                rental["start_time"] = (rental["start_time"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+            elif isinstance(rental["start_time"], str):
+                try:
+                    dt = datetime.fromisoformat(rental["start_time"])
+                    rental["start_time"] = (dt + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+                except: pass
+
+    conn.close()
+    return render_template("partials/live_rentals.html", rentals=rentals)
 
 
 @app.route("/staff-activity/export.csv")
