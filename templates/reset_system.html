@@ -14,8 +14,13 @@
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         
         <label>
-            Your Admin Password
-            <input type="password" name="password" required autofocus>
+            Your Password
+            <div style="position: relative;">
+                <input type="password" name="password" id="profilePass" required autofocus style="width:100%; padding:10px; padding-right:40px; box-sizing:border-box;">
+                <span onclick="togglePassword('profilePass', this)" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 18px; color: #667085; user-select: none;">
+                    👁️
+                </span>
+            </div>
         </label>
         
         <label style="margin-top:12px;">
@@ -81,5 +86,21 @@
         });
     }
 </script>
+
+<script>
+function togglePassword(inputId, iconElement) {
+    const input = document.getElementById(inputId);
+    if (input.type === "password") {
+        input.type = "text";
+        iconElement.innerHTML = "🙈"; 
+        iconElement.style.color = "#0d1f46"; 
+    } else {
+        input.type = "password";
+        iconElement.innerHTML = "👁️"; 
+        iconElement.style.color = "#667085"; 
+    }
+}
+</script>
+
 
 {% endblock %}
