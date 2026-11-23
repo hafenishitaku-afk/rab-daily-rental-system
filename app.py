@@ -12472,15 +12472,12 @@ def analytics_dashboard():
     # =============================================
     # OVERVIEW METRICS
     # =============================================
-    
-        # ✅ Total Rental Cost — the true revenue (sum of rental costs, once per rental)
     total_rental_cost = get_single_value(c, """
         SELECT COALESCE(SUM(total_cost), 0)
         FROM daily_rentals
         WHERE status IN ('Completed', 'Active')
     """)
 
-    # ✅ Total Net Settled — actual cash movement (payments minus refunds)
     total_settled = get_single_value(c, """
         SELECT COALESCE(SUM(amount), 0) FROM rental_payments
     """)
@@ -12492,23 +12489,19 @@ def analytics_dashboard():
     available_bicycles = get_single_value(c, "SELECT COUNT(*) FROM bicycles WHERE status = 'Available'")
     
     # =============================================
-    # REVENUE TRENDS
+    # REVENUE TRENDS (Fixed: Restored correct is_postgres logic)
     # =============================================
-    
-    if period == "daily":
-        revenue = execute_query(c, """
-            SELECT
-                DATE(rp.payment_date) AS period_label,
-                COUNT(*) AS transactions,
-                COALESCE(SUM(rp.amount), 0) AS revenue,
-                COALESCE(STRING_AGG(DISTINCT c.full_name, ', '), '—') AS customers
-            FROM rental_payments rp
-            LEFT JOIN daily_rentals dr ON dr.id = rp.daily_rental_id
-            LEFT JOIN customers c ON c.id = dr.customer_id
-            WHERE DATE(rp.payment_date) = %s
-            GROUP BY DATE(rp.payment_date)
-        """, (date_filter,)).fetchall()
-        period_label = "Daily"
+    if is_postgres:
+        daily_revenue = execute_query(c, """
+            SELECT 
+                DATE(payment_date) AS date,
+                COALESCE(SUM(amount), 0) AS revenue,
+                COUNT(*) AS transactions
+            FROM rental_payments
+            WHERE DATE(payment_date) >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY DATE(payment_date)
+            ORDER BY DATE(payment_date) ASC
+        """).fetchall()
         
         weekly_revenue = execute_query(c, """
             SELECT 
@@ -12554,18 +12547,16 @@ def analytics_dashboard():
         """).fetchall()
     else:
         # SQLite syntax
-        revenue = execute_query(c, """
-            SELECT
-                date(rp.payment_date) AS period_label,
-                COUNT(*) AS transactions,
-                COALESCE(SUM(rp.amount), 0) AS revenue,
-                COALESCE(GROUP_CONCAT(DISTINCT c.full_name, ', '), '—') AS customers
-            FROM rental_payments rp
-            LEFT JOIN daily_rentals dr ON dr.id = rp.daily_rental_id
-            LEFT JOIN customers c ON c.id = dr.customer_id
-            WHERE date(rp.payment_date) = ?
-            GROUP BY date(rp.payment_date)
-        """, (date_filter,)).fetchall()
+        daily_revenue = execute_query(c, """
+            SELECT 
+                date(payment_date) AS date,
+                COALESCE(SUM(amount), 0) AS revenue,
+                COUNT(*) AS transactions
+            FROM rental_payments
+            WHERE date(payment_date) >= date('now', '-30 days')
+            GROUP BY date(payment_date)
+            ORDER BY date(payment_date) ASC
+        """).fetchall()
         
         weekly_revenue = execute_query(c, """
             SELECT 
@@ -12621,7 +12612,6 @@ def analytics_dashboard():
     # =============================================
     # BICYCLE ANALYTICS
     # =============================================
-    
     top_bicycles = execute_query(c, """
         SELECT 
             b.bike_code,
@@ -12654,7 +12644,6 @@ def analytics_dashboard():
     # =============================================
     # CUSTOMER ANALYTICS
     # =============================================
-    
     top_customers = execute_query(c, """
         SELECT 
             c.id,
@@ -12670,10 +12659,10 @@ def analytics_dashboard():
         ORDER BY total_spent DESC
         LIMIT 10
     """).fetchall()
-    
 
-
-
+    # =============================================
+    # PAYMENT ANALYTICS
+    # =============================================
     payment_methods = execute_query(c, """
         SELECT 
             payment_method,
@@ -12686,10 +12675,8 @@ def analytics_dashboard():
         ORDER BY collected DESC, net DESC
     """).fetchall()
 
-    # ✅ Correct denominators for the % column
     total_collected = sum(p["collected"] for p in payment_methods)
     total_refunded  = sum(p["refunded"]  for p in payment_methods)
-
     
     avg_duration = execute_query(c, """
         SELECT 
@@ -12703,7 +12690,6 @@ def analytics_dashboard():
     # =============================================
     # MAINTENANCE ANALYTICS
     # =============================================
-    
     maintenance_stats = execute_query(c, """
         SELECT 
             COUNT(*) AS total,
@@ -12718,14 +12704,12 @@ def analytics_dashboard():
     # =============================================
     # DISCOUNT ANALYTICS
     # =============================================
-    
     discount_stats = execute_query(c, """
         SELECT 
             COUNT(*) AS total_used,
             COALESCE(SUM(amount_discounted), 0) AS total_savings
         FROM discount_usage
     """).fetchone()
-
 
     # =============================================
     # STAFF PERFORMANCE & LEADERBOARD
@@ -12743,13 +12727,11 @@ def analytics_dashboard():
         ORDER BY rentals_count DESC
     """).fetchall()
 
-
     conn.close()
     
     # =============================================
     # PREPARE CHART DATA
     # =============================================
-    
     chart_data = {
         "daily_dates": [row["date"] for row in daily_revenue],
         "daily_revenue": [row["revenue"] for row in daily_revenue],
@@ -12795,11 +12777,9 @@ def analytics_dashboard():
         maintenance_stats=maintenance_stats,
         discount_stats=discount_stats,
         chart_data=chart_data,
-
         total_collected=total_collected,
         total_refunded=total_refunded,
         staff_performance=staff_performance
-
     )
 
 
