@@ -3016,17 +3016,17 @@ def customer_login():
 
 
 @app.route("/admin/reset-system", methods=["GET", "POST"])
-@login_required  # ✅ Changed from @admin_required
+@login_required
 def reset_system():
     """Built-in system reset. Wipes business data but keeps Admin/Staff accounts and Stations."""
     from datetime import datetime, timedelta
     
-    # ✅ Manual Admin Check (prevents crash if @admin_required isn't defined)
+    # Manual Admin Check
     if session.get("role") != "admin":
         flash("Access denied. Admins only.", "danger")
         return redirect(url_for("dashboard"))
 
-    # Check if user has recently re-authenticated (within 15 minutes for safety)
+    # Check if user has recently re-authenticated (within 15 minutes)
     reauth_time = session.get("reauthenticated_at")
     needs_reauth = True
     
@@ -3038,86 +3038,82 @@ def reset_system():
         except:
             pass
 
-    # ... (keep the rest of the route exactly as it was) ...
+    if request.method == "POST":
+        if needs_reauth:
+            # ✅ STEP 1: ONLY Verify Password & 2FA
+            password = request.form.get("password", "")
+            totp_code = request.form.get("totp_code", "").strip()
 
-    if request.method == "POST" and needs_reauth:
-        # 1. Verify Password & 2FA
-        password = request.form.get("password", "")
-        totp_code = request.form.get("totp_code", "").strip()
-        confirm_text = request.form.get("confirm_text", "").strip()
-
-        if confirm_text.upper() != "RESET":
-            flash("You must type 'RESET' to confirm.", "danger")
-            return redirect(url_for("reset_system"))
-
-        conn = db()
-        c = conn.cursor()
-        user = execute_query(c, "SELECT password_hash, totp_secret, totp_enabled FROM users WHERE id = ?", 
-                            (session["user_id"],)).fetchone()
-        
-        if not user or not check_password_hash(user["password_hash"], password):
-            flash("Incorrect password.", "danger")
-            conn.close()
-            return redirect(url_for("reset_system"))
-        
-        if user.get("totp_enabled"):
-            if not totp_code or not pyotp.TOTP(user["totp_secret"]).verify(totp_code, valid_window=1):
-                flash("Invalid 2FA code.", "danger")
+            conn = db()
+            c = conn.cursor()
+            user = execute_query(c, "SELECT password_hash, totp_secret, totp_enabled FROM users WHERE id = ?", 
+                                (session["user_id"],)).fetchone()
+            
+            if not user or not check_password_hash(user["password_hash"], password):
+                flash("Incorrect password.", "danger")
                 conn.close()
                 return redirect(url_for("reset_system"))
-        
-        session["reauthenticated_at"] = datetime.utcnow().isoformat()
-        conn.close()
-        flash("✅ Authentication successful. Please click 'EXECUTE RESET' below.", "success")
-        return redirect(url_for("reset_system"))
-
-    if request.method == "POST" and not needs_reauth:
-        # 2. EXECUTE THE WIPE
-        conn = db()
-        c = conn.cursor()
-        
-        try:
-            # Wipe in order of Foreign Key dependencies
-            tables = [
-                'rental_items', 'rental_payments', 'daily_rentals', 
-                'customer_documents', 'loyalty_points', 'damage_claims', 'customer_support', 'customers',
-                'bicycle_health', 'maintenance_records', 'bicycles', 
-                'announcement_comments', 'announcement_voice_notes', 'announcement_reads', 'announcements',
-                'pending_registrations', 'audit_log', 'login_attempts', 'bike_parts', 'appointments'
-            ]
             
-            for table in tables:
-                execute_query(c, f"DELETE FROM {table};")
+            if user.get("totp_enabled"):
+                if not totp_code or not pyotp.TOTP(user["totp_secret"]).verify(totp_code, valid_window=1):
+                    flash("Invalid 2FA code.", "danger")
+                    conn.close()
+                    return redirect(url_for("reset_system"))
             
-            # Wipe customer user accounts (Keep Admin/Manager/Staff)
-            execute_query(c, "DELETE FROM users WHERE role = 'customer';")
-            
-            # Reset ID sequences (Postgres)
-            for table in tables:
-                try:
-                    execute_query(c, f"ALTER SEQUENCE {table}_id_seq RESTART WITH 1;")
-                except Exception:
-                    pass # Ignore if table/sequence doesn't exist
-
-            conn.commit()
-            
-            log_audit(
-                action="system_reset",
-                entity_type="system",
-                details=f"Admin {session.get('username')} performed a full system reset."
-            )
-            
-            flash("✅ SYSTEM SUCCESSFULLY RESET. All business data is gone. Your account is safe.", "success")
-            return redirect(url_for("dashboard"))
-            
-        except Exception as e:
-            conn.rollback()
-            flash(f"❌ Error during reset: {e}", "danger")
-        finally:
+            session["reauthenticated_at"] = datetime.utcnow().isoformat()
             conn.close()
+            flash("✅ Identity verified! Please scroll down and type RESET to confirm.", "success")
+            return redirect(url_for("reset_system"))
+
+        else:
+            # ✅ STEP 2: Execute the Wipe
+            confirm_text = request.form.get("confirm_text", "").strip()
+            
+            if confirm_text.upper() != "RESET":
+                flash("You must type 'RESET' in the box to confirm.", "danger")
+                return redirect(url_for("reset_system"))
+
+            conn = db()
+            c = conn.cursor()
+            
+            try:
+                tables = [
+                    'rental_items', 'rental_payments', 'daily_rentals', 
+                    'customer_documents', 'loyalty_points', 'damage_claims', 'customer_support', 'customers',
+                    'bicycle_health', 'maintenance_records', 'bicycles', 
+                    'announcement_comments', 'announcement_voice_notes', 'announcement_reads', 'announcements',
+                    'pending_registrations', 'audit_log', 'login_attempts', 'bike_parts', 'appointments'
+                ]
+                
+                for table in tables:
+                    execute_query(c, f"DELETE FROM {table};")
+                
+                execute_query(c, "DELETE FROM users WHERE role = 'customer';")
+                
+                for table in tables:
+                    try:
+                        execute_query(c, f"ALTER SEQUENCE {table}_id_seq RESTART WITH 1;")
+                    except Exception:
+                        pass
+
+                conn.commit()
+                
+                log_audit(
+                    action="system_reset",
+                    entity_type="system",
+                    details=f"Admin {session.get('username')} performed a full system reset."
+                )
+                
+                flash("✅ SYSTEM SUCCESSFULLY RESET. All business data is gone. Your account is safe.", "success")
+                return redirect(url_for("dashboard"))
+                
+            except Exception as e:
+                conn.rollback()
+                flash(f"❌ Error during reset: {e}", "danger")
+            finally:
+                conn.close()
 
     return render_template("reset_system.html", title="System Reset", needs_reauth=needs_reauth)
-
 
 @app.route("/admin/page-access", methods=["GET", "POST"])
 @login_required
