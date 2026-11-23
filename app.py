@@ -3014,11 +3014,10 @@ def customer_login():
     # GET
     return render_template("customer_login.html", title="Customer Login")
 
-
 @app.route("/admin/reset-system", methods=["GET", "POST"])
 @login_required
 def reset_system():
-    """Built-in system reset. Wipes business data but keeps Admin/Staff accounts and Stations."""
+    """Built-in system reset. Wipes business data but keeps Admin/Staff accounts, Stations, and Audit Log."""
     from datetime import datetime, timedelta
     
     # Manual Admin Check
@@ -3077,38 +3076,52 @@ def reset_system():
             c = conn.cursor()
             
             try:
-                tables = [
+                print("🧹 Starting ultimate system wipe...")
+                
+                # 1. The Ultimate Wipe: TRUNCATE with CASCADE ignores FK order and resets IDs!
+                # Note: 'audit_log' is excluded so you keep a history of this reset!
+                tables_to_wipe = [
                     'rental_items', 'rental_payments', 'daily_rentals', 
-                    'customer_documents', 'loyalty_points', 'damage_claims', 'customer_support', 'customers',
+                    'customer_documents', 'loyalty_points', 'damage_claims', 'customer_support', 
                     'bicycle_health', 'maintenance_records', 'bicycles', 
-                    'announcement_comments', 'announcement_voice_notes', 'announcement_reads', 'announcements',
-                    'pending_registrations', 'audit_log', 'login_attempts', 'bike_parts', 'appointments'
+                    'announcement_comments', 'announcement_voice_notes', 'announcement_reads', 
+                    'announcements', 'pending_registrations', 'login_attempts', 
+                    'bike_parts', 'appointments', 'customers'
                 ]
                 
-                for table in tables:
-                    execute_query(c, f"DELETE FROM {table};")
+                # Join all tables into one massive TRUNCATE command
+                table_list = ", ".join(tables_to_wipe)
                 
-                execute_query(c, "DELETE FROM users WHERE role = 'customer';")
+                # CASCADE automatically handles foreign key dependencies!
+                # RESTART IDENTITY resets the auto-increment counters back to 1!
+                raw_sql = f"TRUNCATE TABLE {table_list} RESTART IDENTITY CASCADE;"
                 
-                for table in tables:
-                    try:
-                        execute_query(c, f"ALTER SEQUENCE {table}_id_seq RESTART WITH 1;")
-                    except Exception:
-                        pass
-
-                conn.commit()
+                print(f"🗑️ Executing: {raw_sql}")
+                c.execute(raw_sql)
                 
+                # 2. Wipe customer user accounts
+                print("🗑️ Deleting customer user accounts...")
+                c.execute("DELETE FROM users WHERE role = 'customer';")
+                
+                # 3. Log the action BEFORE committing (so it survives the wipe if we didn't exclude audit_log)
+                # Since we excluded audit_log from the truncate, this will safely record the reset!
                 log_audit(
                     action="system_reset",
                     entity_type="system",
                     details=f"Admin {session.get('username')} performed a full system reset."
                 )
+
+                # 4. COMMIT the transaction
+                conn.commit()
+                print("✅ Database wipe committed successfully!")
                 
                 flash("✅ SYSTEM SUCCESSFULLY RESET. All business data is gone. Your account is safe.", "success")
                 return redirect(url_for("dashboard"))
                 
             except Exception as e:
                 conn.rollback()
+                # This will print the EXACT error to your Render logs / terminal
+                print(f"❌ FATAL ERROR DURING RESET: {e}")
                 flash(f"❌ Error during reset: {e}", "danger")
             finally:
                 conn.close()
