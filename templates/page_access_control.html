@@ -90,4 +90,19 @@
 
 {% endif %}
 
+<script>
+function togglePassword(inputId, iconElement) {
+    const input = document.getElementById(inputId);
+    if (input.type === "password") {
+        input.type = "text";
+        iconElement.innerHTML = "🙈"; // Change icon to closed eyes
+        iconElement.style.color = "#0d1f46"; // Highlight color
+    } else {
+        input.type = "password";
+        iconElement.innerHTML = "👁️"; // Change icon back to open eyes
+        iconElement.style.color = "#667085"; // Default color
+    }
+}
+</script>
+
 {% endblock %}

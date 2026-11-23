@@ -138,9 +138,15 @@
         <h2>🔒 Password</h2>
         <label style="display:block;">
             New Password
-            <input type="password" name="new_password" minlength="10"
-                   placeholder="Leave blank to keep current"
-                   title="At least 10 characters, with a letter, a number, and a special character.">
+            <div style="position: relative;">
+                <input type="password" name="new_password" id="workerNewPass" minlength="10"
+                       placeholder="Leave blank to keep current"
+                       title="At least 10 characters, with a letter, a number, and a special character."
+                       style="width:100%; padding:10px; padding-right:40px; box-sizing:border-box;">
+                <span onclick="togglePassword('workerNewPass', this)" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 18px; color: #667085; user-select: none;">
+                    👁️
+                </span>
+            </div>
             <small style="color:#667085;display:block;margin-top:4px;">
                 Only fill to change the password. Policy: 10+ chars with a letter, number, and special character.
             </small>
@@ -152,5 +158,20 @@
         <a href="{{ url_for('worker_profile', worker_id=worker.id) }}" class="btn">Cancel</a>
     </div>
 </form>
+
+<script>
+function togglePassword(inputId, iconElement) {
+    const input = document.getElementById(inputId);
+    if (input.type === "password") {
+        input.type = "text";
+        iconElement.innerHTML = "🙈"; // Change icon to closed eyes
+        iconElement.style.color = "#0d1f46"; // Highlight color
+    } else {
+        input.type = "password";
+        iconElement.innerHTML = "👁️"; // Change icon back to open eyes
+        iconElement.style.color = "#667085"; // Default color
+    }
+}
+</script>
 
 {% endblock %}

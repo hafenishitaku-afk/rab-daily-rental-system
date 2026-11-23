@@ -42,14 +42,14 @@
 
 
             <label>
-                New Password
-                <input type="password" name="new_password" minlength="10"
-                       placeholder="Leave blank to keep current"
-                       title="At least 10 characters, with a letter, a number, and a special character">
-                <small style="color:#667085;display:block;margin-top:4px;">
-                    🔒 Minimum 10 characters, with a letter, a number, and a special character.
-                </small>
-            </label>            
+                Your Password
+                <div style="position: relative;">
+                    <input type="password" name="password" id="profilePass" required autofocus style="width:100%; padding:10px; padding-right:40px; box-sizing:border-box;">
+                    <span onclick="togglePassword('profilePass', this)" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 18px; color: #667085; user-select: none;">
+                        👁️
+                    </span>
+                </div>
+            </label>         
 
 
 
@@ -115,5 +115,20 @@
         </a>
     {% endif %}
 </div>
+
+<script>
+function togglePassword(inputId, iconElement) {
+    const input = document.getElementById(inputId);
+    if (input.type === "password") {
+        input.type = "text";
+        iconElement.innerHTML = "🙈"; // Change icon to closed eyes
+        iconElement.style.color = "#0d1f46"; // Highlight color
+    } else {
+        input.type = "password";
+        iconElement.innerHTML = "👁️"; // Change icon back to open eyes
+        iconElement.style.color = "#667085"; // Default color
+    }
+}
+</script>
 
 {% endblock %}

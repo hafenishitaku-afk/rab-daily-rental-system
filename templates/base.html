@@ -111,7 +111,7 @@
                 
                 <!-- Admin Only -->
                 {% if session.role == 'admin' %}
-                <a href="{{ url_for('page_access_control') }}" style="color:#ffd700; font-weight:bold; border: 1px solid #ffd700; padding: 4px 8px; border-radius: 4px;">🔒 Page Access</a>
+                <a href="{{ url_for('page_access_control') }}" style="color:#00ff80; font-weight:bold; border: 1px solid #ffd700; padding: 4px 8px; border-radius: 4px;">🔒 Page Access</a>
                 
                 {% if can_view_audit_log_master %}
                 <a href="{{ url_for('audit_log_master') }}" style="color:#00ff80;">🏷️ Audit Log Master</a>
@@ -130,7 +130,7 @@
                 {% if can_view_station_payouts %}
                 <a href="{{ url_for('station_payouts') }}" style="color:#00ff80;">💰 Station Payouts</a>
                 {% endif %}
-                
+                <a href="{{ url_for('reset_system') }}" style="color:#00ff80; font-weight:bold; border: 1px solid #ffd700; padding: 4px 8px; border-radius: 4px;">⚙️Reset System</a>
                 <a href="{{ url_for('items') }}" style="color:#00ff80;">🎁 Items</a>
                 <a href="{{ url_for('audit_log_page') }}" style="color:#00ff80;">📋 Audit Log</a> 
                 <a href="{{ url_for('privacy_requests_dashboard') }}" style="color:#00ff80;">🔒 Privacy Requests</a>
