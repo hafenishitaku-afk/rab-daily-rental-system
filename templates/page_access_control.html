@@ -13,11 +13,22 @@
     <form method="post">
         <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         
-        <label>
+        <!-- <label>
             Your Password
             <input type="password" name="password" required autofocus>
-        </label>
+        </label> -->
         
+        <label>
+            Your Password
+            <div style="position: relative;">
+                <input type="password" name="password" id="profilePass" required autofocus style="width:100%; padding:10px; padding-right:40px; box-sizing:border-box;">
+                <span onclick="togglePassword('profilePass', this)" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); cursor: pointer; font-size: 18px; color: #667085; user-select: none;">
+                    👁️
+                </span>
+            </div>
+        </label>
+
+
         <label style="margin-top:12px;">
             2FA Code (if enabled)
             <input type="text" name="totp_code" placeholder="6-digit code" maxlength="6" pattern="[0-9]{6}">
