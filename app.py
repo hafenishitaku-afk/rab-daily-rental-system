@@ -4264,6 +4264,7 @@ def worker_profile(worker_id):
     )
 
 
+
 @app.route("/workers/<int:worker_id>/edit", methods=["GET", "POST"])
 @login_required
 @manager_required
@@ -4297,7 +4298,9 @@ def worker_edit(worker_id):
         full_name = (request.form.get("full_name") or "").strip()
         email = (request.form.get("email") or "").strip()
         phone = (request.form.get("phone") or "").strip()
-        id_number = (request.form.get("id_number") or "").strip()
+        
+        # ✅ REMOVED: id_number (it doesn't exist in the users table)
+        
         date_of_birth = (request.form.get("date_of_birth") or "").strip() or None
         hire_date = (request.form.get("hire_date") or "").strip() or None
         address = (request.form.get("address") or "").strip()
@@ -4317,19 +4320,19 @@ def worker_edit(worker_id):
             flash("Only an admin can assign the admin role.", "warning")
 
         # Update base fields
+        # ✅ FIX: Removed 'id_number' from the SET clause and the tuple
         execute_query(c, """
             UPDATE users
-            SET full_name = ?, email = ?, phone = ?, id_number = ?,
+            SET full_name = ?, email = ?, phone = ?,
                 date_of_birth = ?, hire_date = ?, address = ?,
                 emergency_contact = ?, job_title = ?, specialty = ?,
                 tax_number = ?, worker_notes = ?, role = ?, branch_id = ?
             WHERE id = ?
-        """, (full_name, email, phone, id_number,
+        """, (full_name, email, phone,
               date_of_birth, hire_date, address,
               emergency_contact, job_title, specialty,
               tax_number, worker_notes, role, branch_id,
               worker_id))
-
 
         # ✅ Optional: photo upload
         photo = request.files.get("photo") if request.files else None
@@ -4351,6 +4354,7 @@ def worker_edit(worker_id):
 
             if use_cloudinary:
                 try:
+                    import cloudinary.uploader
                     result = cloudinary.uploader.upload(photo)
                     new_photo_path = result["secure_url"]
                     uploaded = True
@@ -4358,8 +4362,10 @@ def worker_edit(worker_id):
                     print(f"⚠️ Cloudinary upload failed: {e}")
 
             if not uploaded:
+                from werkzeug.utils import secure_filename
                 filename = f"worker_photo_{worker_id}_{secure_filename(photo.filename)}"
                 full_path = os.path.join(PRIVATE_UPLOAD_FOLDER, filename)
+                os.makedirs(os.path.dirname(full_path), exist_ok=True)
                 photo.save(full_path)
                 new_photo_path = f"private_uploads/{filename}"
 
@@ -4394,10 +4400,10 @@ def worker_edit(worker_id):
             action="worker_edit",
             entity_type="user",
             entity_id=worker_id,
-            details=f"Updated worker '{worker['username']}' — role={role}, title={job_title}"
+            details=f"Updated worker '{worker.get('username')}' — role={role}, title={job_title}"
         )
 
-        flash(f"Worker '{full_name or worker['username']}' updated.", "success")
+        flash(f"Worker '{full_name or worker.get('username')}' updated.", "success")
         return redirect(url_for("worker_profile", worker_id=worker_id))
 
     conn.close()
@@ -4409,6 +4415,7 @@ def worker_edit(worker_id):
         stations=stations,
         viewer_role=viewer_role,
     )
+
 
 @app.route("/reports/station-payouts")
 @login_required
