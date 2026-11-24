@@ -5684,7 +5684,21 @@ def staff_activity():
     )
 
 
-
+@app.route("/find-stations")
+def find_stations():
+    """Public page showing all active stations."""
+    conn = db()
+    c = conn.cursor()
+    
+    stations = execute_query(c, """
+        SELECT name, location, address, phone, status, status_message
+        FROM branches
+        WHERE is_active = 1
+        ORDER BY status ASC, name ASC
+    """).fetchall()
+    
+    conn.close()
+    return render_template("find_stations.html", title="Find a Station", stations=stations)
 
 @app.route("/stations", methods=["GET", "POST"])
 @login_required
@@ -5941,10 +5955,30 @@ def how_to_register():
     return render_template("how_to_register.html", title="How to Register", stations=stations)
 
 
+
 @app.route("/register")
 def register_landing():
-    """Dedicated landing page for new customer registrations."""
-    return render_template("register_landing.html", title="Join RAB - Registration")
+    """Public registration landing page with station directory."""
+    conn = db()
+    c = conn.cursor()
+
+    # ✅ Public-safe columns only (no email, no bike count, no admin actions)
+    stations = execute_query(c, """
+        SELECT name, location, address, phone, status, status_message
+        FROM branches
+        WHERE COALESCE(is_active, 1) = 1
+        ORDER BY status ASC, name ASC
+    """).fetchall()
+
+    conn.close()
+    print(f"🔎 DEBUG: stations fetched = {len(stations)}")
+    return render_template(
+        "register_landing.html",
+        title="Join RAB - Registration",
+        stations=stations
+    )
+
+
 
 
 @app.route("/registration-success")
