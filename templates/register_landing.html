@@ -35,7 +35,7 @@
             -webkit-backdrop-filter: blur(12px); /* Safari support */
             padding: 30px 40px;
             border-radius: 16px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1); /* Soft, realistic shadow (replaces invalid 'transparent') */
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1); /* Soft, realistic shadow */
             text-align: center;
             max-width: 550px;
             width: 100%;
@@ -85,6 +85,88 @@
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }
 
+        /* ✅ PUBLIC STATION DIRECTORY STYLES */
+        .stations-wrap {
+            width: 100%;
+            max-width: 920px;
+            margin-top: 30px;
+        }
+        .stations-wrap h2 {
+            color: #fff;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.6);
+            margin: 0 0 4px 0;
+            font-size: 1.4rem;
+            text-align: center;
+        }
+        .stations-wrap .hint {
+            color: #ffe500;
+            text-align: center;
+            font-size: 13px;
+            margin: 0 0 16px 0;
+            text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+        }
+        .station-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 16px;
+        }
+        .station-card {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            border-radius: 12px;
+            padding: 18px;
+            text-align: left;
+            box-shadow: 0 6px 20px rgba(0,0,0,0.12);
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+        .station-card .s-name {
+            font-weight: 800;
+            color: #0d1f46;
+            font-size: 16px;
+            margin: 0;
+        }
+        .station-card .s-loc {
+            color: #667085;
+            font-size: 13px;
+            margin: 0;
+        }
+        .station-card .s-addr {
+            color: #333;
+            font-size: 13px;
+            margin: 2px 0 8px 0;
+        }
+        .station-card .s-phone a {
+            color: #0d1f46;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 14px;
+        }
+        .station-card .s-phone a:hover { text-decoration: underline; }
+        
+        .s-status {
+            display: inline-block;
+            margin-top: 8px;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 700;
+            width: fit-content;
+        }
+        .s-open   { background: #e7f6ec; color: #16834b; }
+        .s-closed { background: #fdeceb; color: #dc3545; }
+        .s-away   { background: #fff8e1; color: #a66300; }
+        
+        .s-msg { 
+            font-size: 12px; 
+            color: #667085; 
+            margin-top: 6px; 
+            font-style: italic;
+        }
+
         /* Responsive for mobile screens */
         @media (max-width: 768px) {
             .landing-container {
@@ -92,6 +174,8 @@
                 /* Dark overlay on mobile ensures the glass card remains readable */
                 background: rgba(13, 31, 70, 0.7); 
                 min-height: 100vh;
+                justify-content: flex-start; /* Better scrolling on mobile */
+                padding-top: 40px;
             }
             body {
                 background-size: cover; /* Revert zoom on mobile to save space */
@@ -100,13 +184,16 @@
             .landing-card {
                 background: rgba(255, 255, 255, 0.95); /* More opaque on mobile for max readability */
             }
+            .stations-wrap h2, .stations-wrap .hint {
+                color: #fff; /* Ensure visibility over mobile overlay */
+            }
         }
     </style>
 </head>
 <body>
     <div class="landing-container">
+        <!-- Main Registration Card -->
         <div class="landing-card">
-            
             <img src="{{ url_for('static', filename='Mylogo.png') }}" 
                  alt="RAB Rent A Bike" 
                  style="height:100px; width:auto; margin-bottom:15px;"> 
@@ -141,6 +228,41 @@
                 🔍 Check Application Status
             </a>
         </div>
+
+        <!-- ✅ PUBLIC STATION DIRECTORY (Secure: No email, no bike counts, no admin actions) -->
+        <div class="stations-wrap">
+            <h2>📍 Find a Station Near You</h2>
+            <p class="hint">Tap a phone number to call the station directly.</p>
+            <div class="station-grid">
+                {% for s in stations %}
+                <div class="station-card">
+                    <p class="s-name">{{ s.name }}</p>
+                    {% if s.location %}<p class="s-loc">📌 {{ s.location }}</p>{% endif %}
+                    {% if s.address %}<p class="s-addr">🏠 {{ s.address }}</p>{% endif %}
+                    {% if s.phone %}
+                        <p class="s-phone">📞 <a href="tel:{{ s.phone }}">{{ s.phone }}</a></p>
+                    {% endif %}
+                    
+                    {% if s.status == 'Open' %}
+                        <span class="s-status s-open">🟢 Open</span>
+                    {% elif s.status == 'Away' %}
+                        <span class="s-status s-away">🟡 Away</span>
+                    {% else %}
+                        <span class="s-status s-closed">🔴 Closed</span>
+                    {% endif %}
+                    
+                    {% if s.status_message %}
+                        <p class="s-msg">💬 {{ s.status_message }}</p>
+                    {% endif %}
+                </div>
+                {% else %}
+                <p style="color:#fff; text-align:center; grid-column:1/-1; text-shadow: 0 1px 4px rgba(0,0,0,0.6);">
+                    Station locations will appear here soon.
+                </p>
+                {% endfor %}
+            </div>
+        </div>
+
     </div>
 </body>
 </html>
