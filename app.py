@@ -4269,11 +4269,7 @@ def worker_profile(worker_id):
 @login_required
 @manager_required
 def worker_edit(worker_id):
-    """
-    Edit a worker.
-    - Admin: all fields
-    - Manager: everything except salary + bank_details
-    """
+    """Edit a worker (Admin/Manager)."""
     viewer_role = session.get("role")
 
     conn = db()
@@ -4294,21 +4290,13 @@ def worker_edit(worker_id):
     """).fetchall()
 
     if request.method == "POST":
-        # Fields everyone can set
+        # ✅ Only grab fields that ACTUALLY exist in the 'users' table
         full_name = (request.form.get("full_name") or "").strip()
         email = (request.form.get("email") or "").strip()
         phone = (request.form.get("phone") or "").strip()
-        
-        # ✅ REMOVED: id_number (it doesn't exist in the users table)
-        
-        date_of_birth = (request.form.get("date_of_birth") or "").strip() or None
-        hire_date = (request.form.get("hire_date") or "").strip() or None
-        address = (request.form.get("address") or "").strip()
-        emergency_contact = (request.form.get("emergency_contact") or "").strip()
         job_title = (request.form.get("job_title") or "").strip()
         specialty = (request.form.get("specialty") or "").strip()
-        tax_number = (request.form.get("tax_number") or "").strip()
-        worker_notes = (request.form.get("worker_notes") or "").strip()
+        hire_date = (request.form.get("hire_date") or "").strip() or None
         role = request.form.get("role", worker["role"])
         branch_id = request.form.get("branch_id") or None
         if branch_id:
@@ -4319,20 +4307,14 @@ def worker_edit(worker_id):
             role = worker["role"]  # keep as-is
             flash("Only an admin can assign the admin role.", "warning")
 
-        # Update base fields
-        # ✅ FIX: Removed 'id_number' from the SET clause and the tuple
+        # ✅ Update ONLY the columns that exist in the 'users' table
         execute_query(c, """
             UPDATE users
-            SET full_name = ?, email = ?, phone = ?,
-                date_of_birth = ?, hire_date = ?, address = ?,
-                emergency_contact = ?, job_title = ?, specialty = ?,
-                tax_number = ?, worker_notes = ?, role = ?, branch_id = ?
+            SET full_name = ?, email = ?, phone = ?, 
+                job_title = ?, specialty = ?, hire_date = ?, 
+                role = ?, branch_id = ?
             WHERE id = ?
-        """, (full_name, email, phone,
-              date_of_birth, hire_date, address,
-              emergency_contact, job_title, specialty,
-              tax_number, worker_notes, role, branch_id,
-              worker_id))
+        """, (full_name, email, phone, job_title, specialty, hire_date, role, branch_id, worker_id))
 
         # ✅ Optional: photo upload
         photo = request.files.get("photo") if request.files else None
@@ -4371,17 +4353,7 @@ def worker_edit(worker_id):
 
             execute_query(c, "UPDATE users SET photo_path = ? WHERE id = ?", (new_photo_path, worker_id))
 
-        # Salary + bank_details — admin only
-        if viewer_role == "admin":
-            salary_raw = (request.form.get("salary") or "").strip()
-            salary = float(salary_raw) if salary_raw else None
-            bank_details = (request.form.get("bank_details") or "").strip()
-
-            execute_query(c, """
-                UPDATE users SET salary = ?, bank_details = ? WHERE id = ?
-            """, (salary, bank_details, worker_id))
-
-        # Optional: reset password
+        # ✅ Optional: reset password
         new_password = (request.form.get("new_password") or "").strip()
         if new_password:
             ok, err = validate_password_strength(new_password)
@@ -4403,7 +4375,7 @@ def worker_edit(worker_id):
             details=f"Updated worker '{worker.get('username')}' — role={role}, title={job_title}"
         )
 
-        flash(f"Worker '{full_name or worker.get('username')}' updated.", "success")
+        flash(f"Worker '{full_name or worker.get('username')}' updated successfully.", "success")
         return redirect(url_for("worker_profile", worker_id=worker_id))
 
     conn.close()
