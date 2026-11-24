@@ -230,7 +230,14 @@
         </div>
 
         <!-- ✅ PUBLIC STATION DIRECTORY (Secure: No email, no bike counts, no admin actions) -->
-        <div class="stations-wrap">
+        
+        <!-- ✅ STATION TOGGLE BUTTON -->
+        <button type="button" class="btn-stations" onclick="toggleStations()" id="stationBtn">
+            📍 Show Our Station Locations
+        </button>
+
+        <!-- ✅ PUBLIC STATION DIRECTORY (Hidden until button clicked) -->
+        <div class="stations-wrap" id="stationsWrap">
             <h2>📍 Find a Station Near You</h2>
             <p class="hint">Tap a phone number to call the station directly.</p>
             <div class="station-grid">
@@ -263,6 +270,27 @@
             </div>
         </div>
 
+
+        
     </div>
+
+<script>
+function toggleStations() {
+    const wrap = document.getElementById('stationsWrap');
+    const btn = document.getElementById('stationBtn');
+    wrap.classList.toggle('visible');
+    
+    if (wrap.classList.contains('visible')) {
+        btn.innerHTML = '🙈 Hide Station Locations';
+        btn.style.background = '#dc3545';
+        // Smooth scroll to the stations
+        wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+        btn.innerHTML = '📍 Show Our Station Locations';
+        btn.style.background = '#16834b';
+    }
+}
+</script>
+
 </body>
 </html>
