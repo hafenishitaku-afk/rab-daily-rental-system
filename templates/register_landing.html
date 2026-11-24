@@ -85,11 +85,38 @@
             box-shadow: 0 4px 12px rgba(0,0,0,0.15);
         }
 
+        /* ✅ Station toggle button + hidden grid (ADDED) */
+        .btn-stations {
+            display: block;
+            width: 100%;
+            max-width: 550px; /* Match landing-card max-width */
+            padding: 14px;
+            font-size: 15px;
+            font-weight: bold;
+            margin-top: 12px;
+            text-decoration: none;
+            box-sizing: border-box;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            background: #16834b;
+            color: #fff;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .btn-stations:hover {
+            transform: scale(1.02);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
         /* ✅ PUBLIC STATION DIRECTORY STYLES */
         .stations-wrap {
+            display: none; /* ✅ Hidden by default */
             width: 100%;
             max-width: 920px;
             margin-top: 30px;
+        }
+        .stations-wrap.visible {
+            display: block; /* ✅ Shown when toggled */
         }
         .stations-wrap h2 {
             color: #fff;
@@ -187,6 +214,9 @@
             .stations-wrap h2, .stations-wrap .hint {
                 color: #fff; /* Ensure visibility over mobile overlay */
             }
+            .btn-stations {
+                max-width: 100%;
+            }
         }
     </style>
 </head>
@@ -229,8 +259,6 @@
             </a>
         </div>
 
-        <!-- ✅ PUBLIC STATION DIRECTORY (Secure: No email, no bike counts, no admin actions) -->
-        
         <!-- ✅ STATION TOGGLE BUTTON -->
         <button type="button" class="btn-stations" onclick="toggleStations()" id="stationBtn">
             📍 Show Our Station Locations
@@ -269,9 +297,6 @@
                 {% endfor %}
             </div>
         </div>
-
-
-        
     </div>
 
 <script>
