@@ -6596,7 +6596,6 @@ def reset_customer_password(customer_id):
 
 @app.route("/profile", methods=["GET", "POST"])
 @login_required
-@page_required('profile') 
 def profile():
     """View and edit own profile."""
     conn = db()
