@@ -148,12 +148,8 @@
             
             <!-- ✅ EVERYONE (Staff and Customers) -->
             <a href="{{ url_for('customer_stations') }}" style="color:#ffe500;">📍 Pickup Points</a>
-            <a href="{{ url_for('bike_parts') }}" style="color:#ffe500;">🚲 Learn Parts</a>
-            
-            {% if can_view_profile %}
+            <a href="{{ url_for('bike_parts') }}" style="color:#ffe500;">🚲 Learn Parts</a>          
             <a href="{{ url_for('profile') }}" style="color:#ffe500;">👤 Profile</a>
-            {% endif %}
-            
             <a href="{{ url_for('logout') }}" style="color:#ffe500;">🔒 Logout</a>
             <a href="{{ url_for('my_warnings') }}" style="color:#ffe500;">⚠️ My Warnings</a>
             <a href="{{ url_for('my_awards') }}" style="color:#ffe500;">🏆 My Awards</a>
@@ -263,7 +259,6 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 
-
 {% if session.get('user_id') %}
 <div id="liveIndicator" style="position:fixed; bottom:14px; right:14px; background:rgba(13,31,70,0.92); color:#fff; padding:8px 14px; border-radius:20px; font-size:12px; z-index:9998; display:flex; align-items:center; gap:8px; box-shadow:0 4px 12px rgba(0,0,0,0.25);">
     <span id="liveDot" style="width:8px; height:8px; border-radius:50%; background:#16834b; box-shadow:0 0 0 0 rgba(22,131,75,0.7); animation:livePulse 2s infinite;"></span>
@@ -306,19 +301,18 @@ document.addEventListener('DOMContentLoaded', function() {
         if (el) el.textContent = 'LIVE · synced ' + new Date().toLocaleTimeString();
     }
 
-    // ---- patch the HTML feeds (voice + support) ----
-    async function refreshFeed() {
+    // ---- 1. Patch Voice & Support Feeds ----
+    async function refreshComms() {
         if (document.querySelector('[data-live-feed="voice"], [data-live-feed="support"]')) {
             try {
                 const res = await fetch('/api/live-feed');
                 const html = await res.text();
                 const tmp = document.createElement('div');
                 tmp.innerHTML = html;
-                ['voice', 'support', 'rentals'].forEach(name => {
+                ['voice', 'support'].forEach(name => {
                     const fresh = tmp.querySelector(`[data-live-feed="${name}"]`);
                     const current = document.querySelector(`[data-live-feed="${name}"]`);
                     if (fresh && current) {
-                        // Only swap if content actually changed (prevents audio restart)
                         if (current.innerHTML.trim() !== fresh.innerHTML.trim()) {
                             current.innerHTML = fresh.innerHTML;
                         }
@@ -328,9 +322,23 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
 
+    // ---- 2. Patch Active Rentals (The Fix!) ----
+    async function refreshRentals() {
+        const container = document.querySelector('[data-live-feed="rentals"]');
+        if (container) {
+            try {
+                const res = await fetch('/api/live-rentals');
+                const html = await res.text();
+                // Only swap if content actually changed to prevent flickering
+                if (container.innerHTML.trim() !== html.trim()) {
+                    container.innerHTML = html;
+                }
+            } catch (e) { console.log("Live rentals fetch failed"); }
+        }
+    }
+
     // ---- main poll ----
     async function poll() {
-        // Pause when tab is hidden to save server load
         if (document.hidden) return;
         try {
             const res = await fetch('/api/live-stats');
@@ -345,7 +353,7 @@ document.addEventListener('DOMContentLoaded', function() {
             setBadge('pending_regs', s.pending_regs);
             setBadge('open_support', s.open_support);
 
-            // Toast on *new* events only (compare to previous poll)
+            // Toast on *new* events only
             if (lastStats) {
                 if (s.pending_regs > lastStats.pending_regs) toast('📝 New online registration pending');
                 if (s.unread_announcements > lastStats.unread_announcements) toast('📢 New announcement');
@@ -359,7 +367,11 @@ document.addEventListener('DOMContentLoaded', function() {
             lastStats = s;
             lastStationHash = s.station_hash;
             markSynced();
-            await refreshFeed();
+            
+            // Run both updates
+            await refreshComms();
+            await refreshRentals();
+
         } catch (e) {
             const el = document.getElementById('liveText');
             if (el) el.textContent = '⚠️ offline · retrying…';
@@ -369,7 +381,6 @@ document.addEventListener('DOMContentLoaded', function() {
     function start() { if (!timer) timer = setInterval(poll, INTERVAL); poll(); }
     function stop() { clearInterval(timer); timer = null; }
 
-    // Resume instantly when user comes back to the tab
     document.addEventListener('visibilitychange', () => {
         if (document.hidden) stop(); else start();
     });

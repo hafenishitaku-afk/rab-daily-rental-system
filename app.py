@@ -1188,15 +1188,22 @@ def get_duration_sql():
         # PostgreSQL - calculate duration from UTC time
         return """
             CONCAT(
-                GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.start_time)) / 3600)), 'h ',
-                GREATEST(0, FLOOR((EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.start_time)) % 3600) / 60)), 'm'
+                GREATEST(0, FLOOR((EXTRACT(EPOCH FROM (
+                    CASE WHEN r.is_paused AND r.paused_since IS NOT NULL THEN r.paused_since ELSE CURRENT_TIMESTAMP END
+                    - r.start_time)) - COALESCE(r.paused_seconds,0)) / 3600)), 'h ',
+                GREATEST(0, FLOOR(((EXTRACT(EPOCH FROM (
+                    CASE WHEN r.is_paused AND r.paused_since IS NOT NULL THEN r.paused_since ELSE CURRENT_TIMESTAMP END
+                    - r.start_time)) - COALESCE(r.paused_seconds,0)) % 3600) / 60)), 'm'
             ) AS duration
+
         """
     else:
         # SQLite - calculate duration from UTC time
         return """
-            CAST(MAX(0, (strftime('%s', 'now') - strftime('%s', r.start_time))) / 3600 AS INTEGER) || 'h ' ||
-            CAST(MAX(0, ((strftime('%s', 'now') - strftime('%s', r.start_time)) % 3600)) / 60 AS INTEGER) || 'm' AS duration
+            CAST(MAX(0, ((strftime('%s', CASE WHEN r.is_paused=1 AND r.paused_since IS NOT NULL THEN r.paused_since ELSE 'now' END) - strftime('%s', r.start_time)) - COALESCE(r.paused_seconds,0)) / 3600) AS INTEGER) || 'h ' ||
+            CAST(MAX(0, (((strftime('%s', CASE WHEN r.is_paused=1 AND r.paused_since IS NOT NULL THEN r.paused_since ELSE 'now' END) - strftime('%s', r.start_time)) - COALESCE(r.paused_seconds,0)) % 3600) / 60) AS INTEGER) || 'm' AS duration
+
+
         """
 
 def get_count(cursor, query, params=None):
@@ -2084,7 +2091,7 @@ def init_db():
                 )
             """)
 
-
+        c.execute("ALTER TABLE daily_rentals ADD COLUMN IF NOT EXISTS paused_seconds INTEGER DEFAULT 0")
 
     # =============================================
     # ADD DEFAULT RATES (Works for both)
@@ -6848,10 +6855,6 @@ def customer_rent():
 
 
 
-
-
-
-
 @app.route("/dashboard")
 @login_required
 @staff_required
@@ -6890,7 +6893,7 @@ def dashboard():
             AND total_cost >= 0
         """)
     
-    # ✅ Get active rentals (With GROUP BY to prevent duplicates)
+    # ✅ Get active rentals (Pause-Aware Duration)
     if is_postgres:
         rentals = execute_query(c, """
             SELECT 
@@ -6899,17 +6902,18 @@ def dashboard():
                 b.bike_code,
                 r.start_time,
                 r.deposit_paid,
+                r.is_paused,
                 (SELECT name FROM branches WHERE id = r.start_station_id) AS pickup_station,
                 (SELECT name FROM branches WHERE id = r.expected_end_station_id) AS dropoff_station,
                 CONCAT(
-                    GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.start_time)) / 3600)), 'h ',
-                    GREATEST(0, FLOOR((EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.start_time)) % 3600) / 60)), 'm'
+                    GREATEST(0, FLOOR((EXTRACT(EPOCH FROM (CASE WHEN r.is_paused AND r.paused_since IS NOT NULL THEN r.paused_since ELSE CURRENT_TIMESTAMP END) - r.start_time) - COALESCE(r.paused_seconds, 0)) / 3600)), 'h ',
+                    GREATEST(0, FLOOR(((EXTRACT(EPOCH FROM (CASE WHEN r.is_paused AND r.paused_since IS NOT NULL THEN r.paused_since ELSE CURRENT_TIMESTAMP END) - r.start_time) - COALESCE(r.paused_seconds, 0)) % 3600) / 60)), 'm'
                 ) AS duration
             FROM daily_rentals r
             JOIN customers c ON c.id = r.customer_id
             JOIN bicycles b ON b.id = r.bicycle_id
             WHERE r.status = 'Active'
-            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id
+            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id, r.is_paused, r.paused_since, r.paused_seconds
             ORDER BY r.start_time DESC
         """).fetchall()
     else:
@@ -6920,15 +6924,16 @@ def dashboard():
                 b.bike_code,
                 r.start_time,
                 r.deposit_paid,
+                r.is_paused,
                 (SELECT name FROM branches WHERE id = r.start_station_id) AS pickup_station,
                 (SELECT name FROM branches WHERE id = r.expected_end_station_id) AS dropoff_station,
-                CAST(MAX(0, (strftime('%s', 'now') - strftime('%s', r.start_time))) / 3600 AS INTEGER) || 'h ' ||
-                CAST(MAX(0, ((strftime('%s', 'now') - strftime('%s', r.start_time)) % 3600)) / 60 AS INTEGER) || 'm' AS duration
+                CAST(MAX(0, ((strftime('%s', CASE WHEN r.is_paused=1 AND r.paused_since IS NOT NULL THEN r.paused_since ELSE 'now' END) - strftime('%s', r.start_time)) - COALESCE(r.paused_seconds,0)) / 3600) AS INTEGER) || 'h ' ||
+                CAST(MAX(0, (((strftime('%s', CASE WHEN r.is_paused=1 AND r.paused_since IS NOT NULL THEN r.paused_since ELSE 'now' END) - strftime('%s', r.start_time)) - COALESCE(r.paused_seconds,0)) % 3600) / 60) AS INTEGER) || 'm' AS duration
             FROM daily_rentals r
             JOIN customers c ON c.id = r.customer_id
             JOIN bicycles b ON b.id = r.bicycle_id
             WHERE r.status = 'Active'
-            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id
+            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id, r.is_paused, r.paused_since, r.paused_seconds
             ORDER BY r.start_time DESC
         """).fetchall()
 
@@ -7008,14 +7013,12 @@ def dashboard():
         ORDER BY b.name
     """).fetchall()
 
-
     # ✅ Check for unread announcements
     unread_announcements = get_single_value(c, """
         SELECT COUNT(*) FROM announcements a
         LEFT JOIN announcement_reads ar ON ar.announcement_id = a.id AND ar.user_id = ?
         WHERE a.is_active = 1 AND ar.id IS NULL
     """, (session["user_id"],)) 
-
 
     stations = execute_query(c, """
         SELECT id, name, location, status, status_message 
@@ -7026,7 +7029,6 @@ def dashboard():
 
     # ✅ Count pending online registrations
     pending_online_regs = get_single_value(c, "SELECT COUNT(*) FROM pending_registrations WHERE status = 'Pending'")
-
 
     # ✅ Get all online users (active in the last 5 minutes)
     if is_postgres:
@@ -7057,14 +7059,8 @@ def dashboard():
     for v in recent_voice_notes:
         if isinstance(v["created_at"], datetime):
             v["created_at"] = (v["created_at"] + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
-  
-
 
     # ✅ Recent customer-support voice notes + open ticket count
-
-
-
-     # ✅ Recent customer-support voice notes + open ticket count
     recent_support = execute_query(c, """
         SELECT cs.id, cs.sender_role, cs.file_path, cs.created_at,
                cu.full_name AS cust_name, u.full_name AS staff_name
@@ -7080,7 +7076,6 @@ def dashboard():
     open_support = get_single_value(c, """
         SELECT COUNT(DISTINCT customer_id) FROM customer_support WHERE resolved = FALSE
     """) or 0
-
 
     conn.close()
     
@@ -7108,8 +7103,8 @@ def dashboard():
         online_users=online_users,
         recent_support=recent_support,
         open_support=open_support,          
-                   
     )
+
 
 
 
@@ -10373,11 +10368,14 @@ def live_feed():
                            recent_voice_notes=recent_voice_notes,
                            recent_support=recent_support)
 
+
+
+
 @app.route("/api/live-rentals")
 @login_required
 @staff_required
 def live_rentals():
-    """Returns the pre-rendered HTML for the Active Rentals table."""
+    """Returns the pre-rendered HTML for the Active Rentals table (with Pause support)."""
     from datetime import datetime, timedelta
     
     conn = db()
@@ -10385,39 +10383,40 @@ def live_rentals():
     is_postgres = os.environ.get("DATABASE_URL") is not None
 
     if is_postgres:
+        # ✅ Calculates duration based on whether it's paused or not
         rentals = execute_query(c, """
             SELECT 
-                r.id, c.full_name, b.bike_code, r.start_time, r.deposit_paid,
+                r.id, c.full_name, b.bike_code, r.start_time, r.deposit_paid, r.is_paused,
                 (SELECT name FROM branches WHERE id = r.start_station_id) AS pickup_station,
                 (SELECT name FROM branches WHERE id = r.expected_end_station_id) AS dropoff_station,
                 CONCAT(
-                    GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.start_time)) / 3600)), 'h ',
-                    GREATEST(0, FLOOR((EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - r.start_time)) % 3600) / 60)), 'm'
+                    GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (CASE WHEN r.is_paused THEN r.paused_since ELSE CURRENT_TIMESTAMP END - r.start_time)) / 3600)), 'h ',
+                    GREATEST(0, FLOOR((EXTRACT(EPOCH FROM (CASE WHEN r.is_paused THEN r.paused_since ELSE CURRENT_TIMESTAMP END - r.start_time)) % 3600) / 60)), 'm'
                 ) AS duration
             FROM daily_rentals r
             JOIN customers c ON c.id = r.customer_id
             JOIN bicycles b ON b.id = r.bicycle_id
             WHERE r.status = 'Active'
-            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id
+            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id, r.is_paused, r.paused_since
             ORDER BY r.start_time DESC
         """).fetchall()
     else:
         rentals = execute_query(c, """
             SELECT 
-                r.id, c.full_name, b.bike_code, r.start_time, r.deposit_paid,
+                r.id, c.full_name, b.bike_code, r.start_time, r.deposit_paid, r.is_paused,
                 (SELECT name FROM branches WHERE id = r.start_station_id) AS pickup_station,
                 (SELECT name FROM branches WHERE id = r.expected_end_station_id) AS dropoff_station,
-                CAST(MAX(0, (strftime('%s', 'now') - strftime('%s', r.start_time))) / 3600 AS INTEGER) || 'h ' ||
-                CAST(MAX(0, ((strftime('%s', 'now') - strftime('%s', r.start_time)) % 3600)) / 60 AS INTEGER) || 'm' AS duration
+                CAST(MAX(0, (strftime('%s', CASE WHEN r.is_paused THEN r.paused_since ELSE 'now' END) - strftime('%s', r.start_time))) / 3600 AS INTEGER) || 'h ' ||
+                CAST(MAX(0, ((strftime('%s', CASE WHEN r.is_paused THEN r.paused_since ELSE 'now' END) - strftime('%s', r.start_time)) % 3600) / 60) AS INTEGER) || 'm' AS duration
             FROM daily_rentals r
             JOIN customers c ON c.id = r.customer_id
             JOIN bicycles b ON b.id = r.bicycle_id
             WHERE r.status = 'Active'
-            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id
+            GROUP BY r.id, c.full_name, b.bike_code, r.start_time, r.start_station_id, r.expected_end_station_id, r.is_paused, r.paused_since
             ORDER BY r.start_time DESC
         """).fetchall()
 
-    # Format start_time to Namibia Local Time (+2 hours)
+    # Format start_time
     for rental in rentals:
         if rental.get("start_time"):
             if isinstance(rental["start_time"], datetime):
@@ -10430,6 +10429,7 @@ def live_rentals():
 
     conn.close()
     return render_template("partials/live_rentals.html", rentals=rentals)
+
 
 
 @app.route("/staff-activity/export.csv")
@@ -14608,16 +14608,11 @@ def staff_required(f):
     return wrapper
 
 
-
-
-
-
-
 @app.route("/rentals/end/<int:rental_id>", methods=["GET", "POST"])
 @login_required
 @staff_required
 def end_rental(rental_id):
-    """End a rental and calculate the total cost."""
+    """End a rental and calculate the total cost (Pause-Aware, frozen clock)."""
     from datetime import datetime, timedelta, timezone
     import pytz
 
@@ -14637,202 +14632,143 @@ def end_rental(rental_id):
         flash("Rental not found.", "danger")
         return redirect(url_for("dashboard"))
 
-    # ✅ Handle start_time as datetime or string (stored in UTC — offset-naive)
-    if isinstance(rental["start_time"], datetime):
-        start_time_utc = rental["start_time"]
-    else:
-        start_time_utc = datetime.fromisoformat(rental["start_time"])
-    
-    if start_time_utc.tzinfo is not None:
-        start_time_utc = start_time_utc.astimezone(timezone.utc).replace(tzinfo=None)
+    # ---------- datetime coercion (naive UTC) ----------
+    def to_dt(v):
+        if v is None: return None
+        if isinstance(v, datetime):
+            return v.astimezone(timezone.utc).replace(tzinfo=None) if v.tzinfo else v
+        try:
+            d = datetime.fromisoformat(str(v))
+            return d.astimezone(timezone.utc).replace(tzinfo=None) if d.tzinfo else d
+        except Exception:
+            return None
 
-    utc_now = datetime.now(timezone.utc).replace(tzinfo=None)
-    namibia_tz = pytz.timezone('Africa/Windhoek')
-    local_now = datetime.now(namibia_tz)
+    start_time_utc = to_dt(rental["start_time"])
+    paused_since   = to_dt(rental.get("paused_since"))
+    paused_seconds = int(rental.get("paused_seconds") or 0)
+    is_paused      = bool(rental.get("is_paused"))
 
+    utc_now   = datetime.now(timezone.utc).replace(tzinfo=None)
+    local_now = datetime.now(pytz.timezone('Africa/Windhoek'))
+
+    # ✅ THE FREEZE POINT: while paused, the clock stops at paused_since.
+    #    This is the single value that must match the dashboard's CASE WHEN.
+    freeze_dt = paused_since if (is_paused and paused_since) else utc_now
+
+    # ✅ Total pause = accumulated (previous pauses) + current in-progress pause
+    current_pause_seconds = int((utc_now - paused_since).total_seconds()) if (is_paused and paused_since) else 0
+    total_paused_seconds  = paused_seconds + current_pause_seconds
+
+    hourly_rate     = rental["hourly_rate"]
+    rate_per_minute = hourly_rate / 60.0
+    deposit_paid    = float(rental["deposit_paid"] or 0)
+
+    # ✅ Billable minutes = (frozen_clock - start) - accumulated_pause
+    def billable_minutes():
+        secs = (freeze_dt - start_time_utc).total_seconds() - paused_seconds
+        return max(1, int(secs // 60))
+
+    # ✅ Night hours only over the ACTUAL usage window (start -> freeze)
+    def night_hours():
+        nh, cur = 0, start_time_utc
+        while cur < freeze_dt:
+            h = (cur.hour + 2) % 24
+            if h >= 18 or h < 6:
+                nh += 1
+            cur += timedelta(hours=1)
+        return nh
+
+    # =============================================
+    # POST — Finalize the rental
+    # =============================================
     if request.method == "POST":
-        end_time_utc = utc_now
-        
-        # ✅ CALCULATE MINUTES INSTEAD OF HOURS
-        total_minutes = int((end_time_utc - start_time_utc).total_seconds() / 60)
-        if total_minutes < 1:
-            total_minutes = 1
-            
-        hourly_rate = rental["hourly_rate"]
-        rate_per_minute = hourly_rate / 60.0
-        deposit_paid = float(rental["deposit_paid"] or 0)
+        end_time_utc  = utc_now
+        total_minutes = billable_minutes()
+        base_cost     = total_minutes * rate_per_minute
+        late_fee      = night_hours() * 10
+        total_cost    = float(round(base_cost + late_fee))
 
-        # 1. Calculate base cost
-        base_cost = total_minutes * rate_per_minute
-        
-        # 2. Calculate night hours (using the loop)
-        night_hours = 0
-        current_check = start_time_utc
-        while current_check < end_time_utc:
-            local_hour = (current_check.hour + 2) % 24
-            if local_hour >= 18 or local_hour < 6:
-                night_hours += 1
-            current_check += timedelta(hours=1)
-            
-        # 3. Calculate penalty (N$10 for every night hour)
-        late_fee = night_hours * 10
-        total_cost = base_cost + late_fee
-
-        # ✅ ROUND TO NEAREST WHOLE NUMBER
-        total_cost = float(round(total_cost))
-        
         damage_amount_val = float(request.form.get("damage_amount", 0) or 0)
         change_due = float(round(deposit_paid - total_cost - damage_amount_val))
 
-        # ✅ Define condition variables BEFORE the UPDATE query
         condition_before = request.form.get("condition_before", "Good")
-        condition_after = request.form.get("condition_after", "Good")
+        condition_after  = request.form.get("condition_after", "Good")
 
-        # ✅ Return station
         end_station_id = request.form.get("end_station_id") or None
         if end_station_id:
             end_station_id = int(end_station_id)
 
-        # ✅ SINGLE UPDATE QUERY
         execute_query(c, """
             UPDATE daily_rentals
             SET end_time = ?, total_hours = ?, total_cost = ?, late_fee = ?,
                 condition_before = ?, condition_after = ?, status = 'Completed',
+                is_paused = FALSE, paused_since = NULL,
                 ended_by_user_id = ?, end_station_id = ?
             WHERE id = ?
         """, (end_time_utc.isoformat(), total_minutes, total_cost, late_fee,
               condition_before, condition_after,
-              session["user_id"], end_station_id,
-              rental_id))
+              session["user_id"], end_station_id, rental_id))
 
-        # ✅ Mark items as returned
-        items_on_rental = execute_query(c, """
-            SELECT ri.item_id FROM rental_items ri
-            WHERE ri.rental_id = ?
-        """, (rental_id,)).fetchall()
-
+        items_on_rental = execute_query(c, "SELECT item_id FROM rental_items WHERE rental_id = ?", (rental_id,)).fetchall()
         for ri in items_on_rental:
             item_id = ri["item_id"]
             cond = request.form.get(f"item_condition_{item_id}", "Good")
             execute_query(c, """
-                UPDATE rental_items
-                SET returned_by_user_id = ?, returned_at = CURRENT_TIMESTAMP,
-                    condition_on_return = ?
-                WHERE rental_id = ? AND item_id = ?
+                UPDATE rental_items SET returned_by_user_id = ?, returned_at = CURRENT_TIMESTAMP,
+                condition_on_return = ? WHERE rental_id = ? AND item_id = ?
             """, (session["user_id"], cond, rental_id, item_id))
 
-        # ✅ Create a damage claim if the returner reported one
         damage_description = (request.form.get("damage_description") or "").strip()
         if damage_amount_val > 0 or damage_description:
             execute_query(c, """
-                INSERT INTO damage_claims
-                (rental_id, customer_id, bicycle_id, description, amount,
-                 status, charged_by_user_id)
+                INSERT INTO damage_claims (rental_id, customer_id, bicycle_id, description, amount, status, charged_by_user_id)
                 VALUES (?, ?, ?, ?, ?, 'Charged', ?)
-            """, (
-                rental_id,
-                rental["customer_id"],
-                rental["bicycle_id"],
-                damage_description or "Damage reported at return",
-                damage_amount_val,
-                session["user_id"]
-            ))
+            """, (rental_id, rental["customer_id"], rental["bicycle_id"], damage_description or "Damage reported", damage_amount_val, session["user_id"]))
+            log_audit(action="damage_create", entity_type="daily_rental", entity_id=rental_id, details=f"Damage: N${damage_amount_val}")
 
-            log_audit(
-                action="damage_create",
-                entity_type="daily_rental",
-                entity_id=rental_id,
-                details=f"Damage reported at return — N${damage_amount_val:.2f}: {damage_description or 'no description'}"
-            )
-
-        # ✅ Move bicycle to return station and mark Available
         if end_station_id:
-            execute_query(c, """
-                UPDATE bicycles
-                SET status = 'Available',
-                    current_station_id = ?
-                WHERE id = ?
-            """, (end_station_id, rental["bicycle_id"]))
+            execute_query(c, "UPDATE bicycles SET status = 'Available', current_station_id = ? WHERE id = ?", (end_station_id, rental["bicycle_id"]))
         else:
-            execute_query(c, """
-                UPDATE bicycles SET status = 'Available' WHERE id = ?
-            """, (rental["bicycle_id"],))
+            execute_query(c, "UPDATE bicycles SET status = 'Available' WHERE id = ?", (rental["bicycle_id"],))
 
-        log_audit(
-            action="rental_end",
-            entity_type="daily_rental",
-            entity_id=rental_id,
-            details=f"Ended rental #{rental_id} — {total_minutes} mins, N${total_cost:.2f}, "
-                    f"deposit=N${deposit_paid:.2f}, station_id={end_station_id}"
-        )
+        log_audit(action="rental_end", entity_type="daily_rental", entity_id=rental_id,
+                  details=f"Ended #{rental_id} — {total_minutes} billable mins (total paused {total_paused_seconds}s), N${total_cost}")
 
         conn.commit()
         conn.close()
 
-        flash(f"Rental completed! Total: N$ {total_cost:.2f} for {total_minutes} minutes", "success")
+        flash(f"Rental completed! {total_minutes} billable minutes → N$ {total_cost:.2f}", "success")
 
-        if change_due == 0:
-            conn = db()
-            c = conn.cursor()
-            execute_query(c, "UPDATE daily_rentals SET payment_status = 'Paid' WHERE id = ?", (rental_id,))
-            conn.commit()
-            conn.close()
+        if change_due >= 0:
+            conn = db(); c2 = conn.cursor()
+            execute_query(c2, "UPDATE daily_rentals SET payment_status = 'Paid' WHERE id = ?", (rental_id,))
+            conn.commit(); conn.close()
             flash("Deposit fully covered the rental. Nothing left to pay.", "success")
             return redirect(url_for("dashboard"))
 
         return redirect(url_for("record_payment", rental_id=rental_id))
 
     # =============================================
-    # GET branch — preview calculation
+    # GET — Preview (now frozen while paused)
     # =============================================
-    preview_minutes = int((utc_now - start_time_utc).total_seconds() / 60)
-    if preview_minutes < 1: preview_minutes = 1
+    preview_minutes = billable_minutes()
+    preview_raw     = preview_minutes * rate_per_minute
+    preview_late    = night_hours() * 10
+    preview_total   = round(preview_raw + preview_late)
+    preview_change  = round(deposit_paid - preview_total)
 
-    hourly_rate = rental["hourly_rate"]
-    rate_per_minute = hourly_rate / 60.0
-    deposit_paid = float(rental["deposit_paid"] or 0)
+    start_time_str = (start_time_utc + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+    end_time_str   = local_now.strftime("%Y-%m-%d %H:%M")
 
-    preview_raw = preview_minutes * rate_per_minute
-    
-    preview_night_hours = 0
-    p_check = start_time_utc
-    while p_check < utc_now:
-        p_local_hour = (p_check.hour + 2) % 24
-        if p_local_hour >= 18 or p_local_hour < 6:
-            preview_night_hours += 1
-        p_check += timedelta(hours=1)
-        
-    preview_late = preview_night_hours * 10
-    preview_total = round(preview_raw + preview_late)
-    preview_change = round(deposit_paid - preview_total)
+    stations = execute_query(c, "SELECT id, name, location FROM branches WHERE is_active = 1 ORDER BY name").fetchall()
 
-    # Format dates for display (convert UTC to local +2)
-    start_time_local = start_time_utc + timedelta(hours=2)
-    start_time_str = start_time_local.strftime("%Y-%m-%d %H:%M")
-    end_time_local = local_now
-    end_time_str = end_time_local.strftime("%Y-%m-%d %H:%M")
-
-    stations = execute_query(c, """
-        SELECT id, name, location FROM branches
-        WHERE is_active = 1
-        ORDER BY name
-    """).fetchall()
-
-    # ✅ Default return station is the EXPECTED drop-off station
-    default_return_station_id = rental.get("expected_end_station_id")
-    if not default_return_station_id:
-        default_return_station_id = rental.get("start_station_id")
-    if not default_return_station_id:
-        default_return_station_id = session.get("station_id")
+    default_return_station_id = rental.get("expected_end_station_id") or rental.get("start_station_id") or session.get("station_id")
     if not default_return_station_id and stations:
         default_return_station_id = stations[0]["id"]
 
     rental_items = execute_query(c, """
-        SELECT ri.*, i.name AS item_name
-        FROM rental_items ri
-        JOIN items i ON i.id = ri.item_id
-        WHERE ri.rental_id = ?
-        ORDER BY i.name
+        SELECT ri.*, i.name AS item_name FROM rental_items ri
+        JOIN items i ON i.id = ri.item_id WHERE ri.rental_id = ? ORDER BY i.name
     """, (rental_id,)).fetchall()
 
     conn.close()
@@ -14846,6 +14782,7 @@ def end_rental(rental_id):
         rental_items=rental_items,
         preview_minutes=preview_minutes,
         hourly_rate=hourly_rate,
+        rate_per_minute=rate_per_minute,
         preview_raw=preview_raw,
         preview_late=preview_late,
         preview_total=preview_total,
@@ -14853,7 +14790,85 @@ def end_rental(rental_id):
         preview_change=preview_change,
         stations=stations,
         default_return_station_id=default_return_station_id,
+        is_paused=is_paused,
+        total_paused_seconds=total_paused_seconds,   # ✅ includes the CURRENT in-progress pause
     )
+
+
+
+@app.route("/rentals/<int:rental_id>/toggle-pause", methods=["POST"])
+@login_required
+@staff_required
+def toggle_rental_pause(rental_id):
+    """Pause or Resume the rental meter (Python-calculated to avoid SQL timezone bugs)."""
+    from datetime import datetime, timezone
+    
+    conn = db()
+    c = conn.cursor()
+    
+    # 1. Fetch the current state
+    rental = execute_query(c, """
+        SELECT is_paused, paused_since, paused_seconds 
+        FROM daily_rentals WHERE id = ?
+    """, (rental_id,)).fetchone()
+    
+    if not rental:
+        conn.close()
+        flash("Rental not found.", "danger")
+        return redirect(url_for("dashboard"))
+
+    is_paused = bool(rental.get("is_paused"))
+    
+    if is_paused:
+        # ✅ RESUME: Calculate duration in Python
+        paused_since_val = rental.get("paused_since")
+        paused_seconds = int(rental.get("paused_seconds") or 0)
+        
+        current_pause_secs = 0
+        
+        # Safely parse the paused_since timestamp
+        if paused_since_val:
+            try:
+                if isinstance(paused_since_val, datetime):
+                    paused_dt = paused_since_val
+                    if paused_dt.tzinfo:
+                        paused_dt = paused_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                else:
+                    paused_dt = datetime.fromisoformat(str(paused_since_val))
+                    if paused_dt.tzinfo:
+                        paused_dt = paused_dt.astimezone(timezone.utc).replace(tzinfo=None)
+                
+                # Calculate seconds between now and when it was paused
+                now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+                current_pause_secs = max(0, int((now_utc - paused_dt).total_seconds()))
+            except Exception as e:
+                print(f"⚠️ Error calculating pause time: {e}")
+                current_pause_secs = 0
+
+        # Add current pause to the total accumulated pause
+        new_total_paused = paused_seconds + current_pause_secs
+        
+        # Update DB with the new total
+        execute_query(c, """
+            UPDATE daily_rentals 
+            SET is_paused = FALSE, paused_since = NULL, paused_seconds = ?
+            WHERE id = ?
+        """, (new_total_paused, rental_id))
+        
+        flash(f"▶️ Meter resumed. (Paused for {current_pause_secs // 60}m {current_pause_secs % 60}s)", "success")
+        
+    else:
+        # ✅ PAUSE: Just freeze the clock
+        execute_query(c, """
+            UPDATE daily_rentals 
+            SET is_paused = TRUE, paused_since = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (rental_id,))
+        flash("⏸️ Meter paused.", "warning")
+
+    conn.commit()
+    conn.close()
+    return redirect(url_for("dashboard"))
 
 @app.route("/users/<int:user_id>/reset-2fa", methods=["POST"])
 @login_required

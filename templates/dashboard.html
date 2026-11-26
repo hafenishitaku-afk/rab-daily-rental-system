@@ -230,7 +230,6 @@
     </p>
 </div>
 
-
 <div class="card">
     <h2>🚲 Active Rentals</h2>
     <div class="scroll">
@@ -239,47 +238,69 @@
                 <tr>
                     <th>Customer</th>
                     <th>Bike</th>
-                    <th>Pickup Station</th>
+                    <th>Pickup</th>
                     <th>Deposit</th>
-                    <th>Expected Drop-off</th>
+                    <th>Drop-off</th>
                     <th>Start Time</th>
                     <th>Duration</th>
-                    <th>Action</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
-            <!-- ✅ THIS IS THE MAGIC WRAPPER -->
+            <!-- ✅ THIS TBODY TAG IS REQUIRED FOR LIVE UPDATES -->
             <tbody data-live-feed="rentals">
                 {% for rental in rentals %}
                 <tr>
                     <td><b>{{ rental.full_name }}</b></td>
                     <td>{{ rental.bike_code }}</td>
                     <td>
-                        {% if rental.pickup_station %}
-                            <span class="badge blue">{{ rental.pickup_station }}</span>
-                        {% else %}
-                            <span style="color:#667085;">—</span>
-                        {% endif %}
+                        {% if rental.pickup_station %}<span class="badge blue">{{ rental.pickup_station }}</span>{% else %}—{% endif %}
                     </td>
                     <td><b>N$ {{ "%.2f"|format(rental.deposit_paid or 0) }}</b></td>
                     <td>
-                        {% if rental.dropoff_station %}
-                            <span class="badge orange">{{ rental.dropoff_station }}</span>
-                        {% else %}
-                            <span style="color:#667085;">—</span>
-                        {% endif %}
+                        {% if rental.dropoff_station %}<span class="badge orange">{{ rental.dropoff_station }}</span>{% else %}—{% endif %}
                     </td>
                     <td>{{ rental.start_time }}</td>
-                    <td>{{ rental.duration }}</td>
+                    
+                    <!-- ✅ Duration turns red if paused -->
                     <td>
-                        <a class="btn small" href="{{ url_for('end_rental', rental_id=rental.id) }}">End Rental</a>
-                        <a class="btn small" href="{{ url_for('rental_agreement_pdf', rental_id=rental.id) }}">📄 Agreement</a>
-                        {% if session.role == 'admin' or session.role == 'manager' %}
-                        <button class="btn small" style="background:#dc3545;color:#fff;"
-                                onclick="openCancelModal({{ rental.id }}, '{{ rental.full_name|e }}', '{{ rental.bike_code|e }}')">
-                            ✖ Cancel
-                        </button>
+                        {% if rental.is_paused %}
+                            <b style="color:#dc3545;">⏸️ {{ rental.duration }}</b>
+                        {% else %}
+                            <b style="color:#0d1f46;">{{ rental.duration }}</b>
                         {% endif %}
                     </td>
+                    
+                    <td>
+                        <div style="display:flex; gap:5px; flex-wrap:wrap;">
+                            <!-- End Rental Button -->
+                            <a class="btn small" href="{{ url_for('end_rental', rental_id=rental.id) }}" style="background:#dc3545; color:#fff;">End</a>
+                            
+                            <!-- Agreement Button -->
+                            <a class="btn small" href="{{ url_for('rental_agreement_pdf', rental_id=rental.id) }}" target="_blank">📄 Agreement</a>
+                            
+                            <!-- Pause/Resume Button -->
+                            <form method="post" action="{{ url_for('toggle_rental_pause', rental_id=rental.id) }}" style="display:inline;">
+                                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                                {% if rental.is_paused %}
+                                    <button class="btn small" style="background:#16834b; color:#fff;">▶️ Resume</button>
+                                {% else %}
+                                    <button class="btn small" style="background:#ffd700; color:#111;">⏸️ Pause</button>
+                                {% endif %}
+                            </form>
+
+                            <!-- Cancel Button (Admin/Manager only) -->
+                            {% if session.role == 'admin' or session.role == 'manager' %}
+                            <button class="btn small" style="background:#6c757d; color:#fff;"
+                                    onclick="openCancelModal({{ rental.id }}, '{{ rental.full_name|e }}', '{{ rental.bike_code|e }}')">
+                                ✖ Cancel
+                            </button>
+                            {% endif %}
+                        </div>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="8" style="text-align:center; padding:20px; color:#667085;">No active rentals right now.</td>
                 </tr>
                 {% endfor %}
             </tbody>

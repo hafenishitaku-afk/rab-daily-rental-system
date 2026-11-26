@@ -1,0 +1,57 @@
+{% if rentals %}
+    {% for r in rentals %}
+    <tr>
+        <td><b>{{ r.full_name }}</b></td>
+        <td>{{ r.bike_code }}</td>
+        <td>
+            {% if r.pickup_station %}<span class="badge blue">{{ r.pickup_station }}</span>{% else %}—{% endif %}
+        </td>
+        <td><b>N$ {{ "%.2f"|format(r.deposit_paid or 0) }}</b></td>
+        <td>
+            {% if r.dropoff_station %}<span class="badge orange">{{ r.dropoff_station }}</span>{% else %}—{% endif %}
+        </td>
+        <td>{{ r.start_time }}</td>
+        
+        <!-- ✅ Duration turns red if paused -->
+        <td>
+            {% if r.is_paused %}
+                <b style="color:#dc3545;">⏸️ {{ r.duration }}</b>
+            {% else %}
+                <b style="color:#0d1f46;">{{ r.duration }}</b>
+            {% endif %}
+        </td>
+        
+        <td>
+            <div style="display:flex; gap:5px; flex-wrap:wrap;">
+                <!-- End Rental Button -->
+                <a class="btn small" href="{{ url_for('end_rental', rental_id=r.id) }}" style="background:#dc3545; color:#fff;">End</a>
+                
+                <!-- Agreement Button -->
+                <a class="btn small" href="{{ url_for('rental_agreement_pdf', rental_id=r.id) }}" target="_blank">📄 Agreement</a>
+                
+                <!-- Pause/Resume Button -->
+                <form method="post" action="{{ url_for('toggle_rental_pause', rental_id=r.id) }}" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    {% if r.is_paused %}
+                        <button class="btn small" style="background:#16834b; color:#fff;">▶️ Resume</button>
+                    {% else %}
+                        <button class="btn small" style="background:#ffd700; color:#111;">⏸️ Pause</button>
+                    {% endif %}
+                </form>
+
+                <!-- Cancel Button (Admin/Manager only) -->
+                {% if session.role == 'admin' or session.role == 'manager' %}
+                <button class="btn small" style="background:#6c757d; color:#fff;"
+                        onclick="openCancelModal({{ r.id }}, '{{ r.full_name|e }}', '{{ r.bike_code|e }}')">
+                    ✖ Cancel
+                </button>
+                {% endif %}
+            </div>
+        </td>
+    </tr>
+    {% endfor %}
+{% else %}
+    <tr>
+        <td colspan="8" style="text-align:center; padding:20px; color:#667085;">No active rentals right now.</td>
+    </tr>
+{% endif %}

@@ -259,6 +259,39 @@ footer {
     font-size: 12px;
 }
 
+
+        /* ✅ Station toggle button + hidden grid */
+        .btn-stations {
+            display: block;
+            width: 100%;
+            padding: 14px;
+            font-size: 15px;
+            font-weight: bold;
+            margin-top: 12px;
+            text-decoration: none;
+            box-sizing: border-box;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            background: #16834b;
+            color: #fff;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .btn-stations:hover {
+            transform: scale(1.02);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .stations-wrap {
+            display: none; /* Hidden by default */
+            width: 100%;
+            max-width: 920px;
+            margin-top: 30px;
+        }
+        .stations-wrap.visible {
+            display: block; /* Shown when toggled */
+        }
+
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 850px) {
     .grid {
@@ -284,6 +317,10 @@ footer {
         padding: 22px 13px;
     }
 }
+
+
+
+
 
 
 /* Delete Button */
